@@ -28,7 +28,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "ferrotop-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ferrotop-sys",
 ]
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "ferrotop-sys"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "windows-link",
  "windows-sys",

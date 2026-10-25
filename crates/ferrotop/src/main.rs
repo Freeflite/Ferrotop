@@ -783,6 +783,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.window().set_size(slint::LogicalSize::new(width as f32, height as f32));
     }
     ui.set_elevated(elevated);
+    ui.set_version(env!("CARGO_PKG_VERSION").into());
     ui.set_tree_mode(settings.tree);
     let lhm_port = settings.lhm_port;
     let start_page = settings.page.index();

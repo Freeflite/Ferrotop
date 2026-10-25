@@ -85,6 +85,7 @@ export component MainWindow inherits Window {
     in property <string> status-counts;
     in property <string> status-message;
     in property <bool> elevated;
+    in property <string> version;
 
     in property <bool> has-selection;
     in property <string> detail-name;
@@ -1912,7 +1913,7 @@ export component MainWindow inherits Window {
                 spacing: 8px;
 
                 Text {
-                    text: "Ferrotop 0.5.0";
+                    text: "Ferrotop " + root.version;
                     font-size: 16px;
                     font-weight: 700;
                     color: Theme.accent;

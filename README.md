@@ -48,8 +48,8 @@ structure layouts are ported from System Informer's C sources (MIT). See
 A page like Task Manager's: a device list with live mini-graphs, and for the selected device:
 
 - **CPU**: utilization overall, per core, per logical processor, or per CCX (cores sharing an L3
-  cache), with each CCD's CCXs boxed together (on Zen to Zen 2 always; on later chips, and for
-  the CCD temperatures, when the temperature sensors can be read). Speed, up time, cores,
+  cache), with each CCD's CCXs boxed together: always on multi-CCD Zen to Zen 2 chips, otherwise
+  (and for the CCD temperatures) when the temperature sensors can be read. Speed, up time, cores,
   threads and cache sizes, and **CPU temperatures** (see below).
 - **Memory**: usage and commit, cached and pool sizes, module speed, type, slots and form factor
   (from the SMBIOS firmware table).

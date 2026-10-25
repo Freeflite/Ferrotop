@@ -4,7 +4,7 @@
 #                                       LGPL-2.1 PawnIO modules, whose license must travel with it)
 #   SHA256SUMS.txt                      checksums, in `sha256sum -c` format
 #
-# Usage: pwsh scripts\package-release.ps1 [-Tag v0.5.0] [-Exe <path>] [-OutDir <path>]
+# Usage: pwsh scripts\package-release.ps1 [-Tag v1.2.3] [-Exe <path>] [-OutDir <path>]
 # With -Tag, refuses to package unless the tag, Cargo.toml and the exe all agree on the version.
 param([string]$Tag, [string]$Exe, [string]$OutDir)
 $ErrorActionPreference = 'Stop'
