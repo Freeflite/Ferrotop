@@ -71,8 +71,10 @@ export component MainWindow inherits Window {
     in property <[ColumnChoice]> column-choices-left;
     in property <[ColumnChoice]> column-choices-right;
 
-    // The small graphs in the header.
+    // The small graphs in the header, and the one being dragged to where (-1 when none).
     in property <[HeaderTile]> header-tiles;
+    property <int> header-drag-from: -1;
+    property <int> header-drag-to: -1;
     // Toggled when Windows needs the window repainted: the invisible cover below changes, so the
     // whole window is drawn again (the renderer otherwise redraws only what changed).
     in property <bool> repaint-all;
@@ -261,6 +263,8 @@ export component MainWindow inherits Window {
     // Fill `series-menu-entries` for these graph keys; an entry was chosen.
     callback series-menu-requested(string);
     callback series-menu-chosen(string, int);
+    // A header graph was dragged from one place to another.
+    callback header-graph-moved(int, int);
     callback windows-hidden-toggled(bool);
     // Installs the history service, or removes it if it's installed.
     callback history-service-clicked();
@@ -486,8 +490,8 @@ export component MainWindow inherits Window {
                         width: 4px;
                     }
 
-                    // Right-click to choose them.
-                    for tile in root.header-tiles: Graph {
+                    // Drag one sideways to move it; right-click to choose them.
+                    for tile[index] in root.header-tiles: Graph {
                         label: tile.label;
                         value: tile.value;
                         line-commands: tile.line;
@@ -496,11 +500,40 @@ export component MainWindow inherits Window {
                         min-width: 84px;
                         preferred-width: 120px;
                         max-width: 120px;
+                        opacity: root.header-drag-from == index ? 0.5 : 1;
+
+                        // Where the dragged graph would go: before this one, or after it.
+                        if root.header-drag-from >= 0 && root.header-drag-to == index && index != root.header-drag-from: Rectangle {
+                            x: root.header-drag-to < root.header-drag-from ? 0 : parent.width - 3px;
+                            width: 3px;
+                            height: parent.height;
+                            background: Theme.accent-cool;
+                        }
 
                         TouchArea {
+                            property <length> start-x;
+
+                            mouse-cursor: root.header-drag-from == index ? MouseCursor.grabbing : MouseCursor.grab;
                             pointer-event(event) => {
+                                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                    self.start-x = self.absolute-position.x + self.mouse-x;
+                                }
+                                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+                                    if (root.header-drag-from == index && root.header-drag-to != index) {
+                                        root.header-graph-moved(index, root.header-drag-to);
+                                    }
+                                    root.header-drag-from = -1;
+                                    root.header-drag-to = -1;
+                                }
                                 if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
                                     root.open-picker(1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                }
+                            }
+                            moved => {
+                                // Graphs are as wide as this one, 10px apart.
+                                if (self.pressed && abs(self.absolute-position.x + self.mouse-x - self.start-x) > 6px) {
+                                    root.header-drag-from = index;
+                                    root.header-drag-to = max(0, min(root.header-tiles.length - 1, index + round((self.absolute-position.x + self.mouse-x - self.start-x) / (parent.width + 10px))));
                                 }
                             }
                         }

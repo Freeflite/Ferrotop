@@ -68,7 +68,10 @@ impl App {
     pub(crate) fn open_picker(&mut self, ui: &MainWindow, target: i32) {
         self.picker_target = target;
         let (title, hint) = if target == HEADER {
-            ("Header graphs", "The small graphs beside the tabs, up to 8. Right-click one to come back here.")
+            (
+                "Header graphs",
+                "The small graphs beside the tabs, up to 8. Drag one sideways to move it; right-click one to come back here.",
+            )
         } else {
             (
                 "Add graphs to History",
@@ -149,6 +152,19 @@ impl App {
         } else if !show {
             graphs.retain(|g| g != id);
         }
+        self.save_settings(ui);
+        self.update_header();
+    }
+
+    /// A header graph was dragged to another place.
+    pub(crate) fn header_graph_moved(&mut self, ui: &MainWindow, (from, to): (i32, i32)) {
+        let graphs = &mut self.settings.header_graphs;
+        let (Ok(from), Ok(to)) = (usize::try_from(from), usize::try_from(to)) else { return };
+        if from >= graphs.len() || to >= graphs.len() || from == to {
+            return;
+        }
+        let graph = graphs.remove(from);
+        graphs.insert(to, graph);
         self.save_settings(ui);
         self.update_header();
     }

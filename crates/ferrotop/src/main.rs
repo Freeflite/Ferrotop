@@ -1057,6 +1057,8 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_series_menu_requested(handler(&ui, &app, App::series_menu_requested));
     let chosen = handler(&ui, &app, App::series_menu_chosen);
     ui.on_series_menu_chosen(move |key, target| chosen((key, target)));
+    let moved = handler(&ui, &app, App::header_graph_moved);
+    ui.on_header_graph_moved(move |from, to| moved((from, to)));
     ui.on_windows_hidden_toggled(handler(&ui, &app, |app, ui, include: bool| {
         app.pages.windows_hidden = include;
         app.load_windows(ui);
