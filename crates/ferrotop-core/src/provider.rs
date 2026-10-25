@@ -293,6 +293,16 @@ impl ProcessProvider {
         &self.stats
     }
 
+    /// Starts the header graphs with what the history service recorded (oldest first), so they
+    /// aren't empty when Ferrotop opens. `total_memory` scales memory to a fraction.
+    pub fn seed_history(&mut self, records: &[crate::archive::SecondRecord], total_memory: u64) {
+        let skip = records.len().saturating_sub(HISTORY_SAMPLES);
+        for record in &records[skip..] {
+            self.cpu_history.push(f64::from(record.cpu));
+            self.memory_history.push(record.memory_used as f64 / total_memory.max(1) as f64);
+        }
+    }
+
     pub fn cpu_history(&self) -> &History {
         &self.cpu_history
     }

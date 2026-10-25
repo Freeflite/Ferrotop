@@ -62,11 +62,13 @@ pub enum Page {
     Services,
     Network,
     History,
+    Windows,
 }
 
 impl Page {
     /// In tab order.
-    pub const ALL: [Page; 5] = [Page::Processes, Page::Performance, Page::Services, Page::Network, Page::History];
+    pub const ALL: [Page; 6] =
+        [Page::Processes, Page::Performance, Page::Services, Page::Network, Page::History, Page::Windows];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -75,6 +77,7 @@ impl Page {
             Page::Services => "services",
             Page::Network => "network",
             Page::History => "history",
+            Page::Windows => "windows",
         }
     }
 
@@ -86,6 +89,7 @@ impl Page {
             Page::Services => 2,
             Page::Network => 3,
             Page::History => 7,
+            Page::Windows => 8,
         }
     }
 

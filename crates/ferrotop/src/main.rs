@@ -40,6 +40,7 @@ const PROPERTIES_PAGE: i32 = 4;
 const FIND_PAGE: i32 = 5;
 const TOOLS_PAGE: i32 = 6;
 const HISTORY_PAGE: i32 = 7;
+const WINDOWS_PAGE: i32 = 8;
 
 /// Sort columns in the order the UI numbers them (0 = unsorted).
 const UI_COLUMNS: [SortColumn; 17] = [
@@ -356,6 +357,7 @@ impl App {
             2 => self.load_services(ui),
             3 => self.load_network(ui),
             HISTORY_PAGE => self.show_history(ui),
+            WINDOWS_PAGE => self.load_windows(ui),
             _ => {}
         }
     }
@@ -600,6 +602,14 @@ impl App {
         self.update_details(ui);
         if self.rows.iter().any(|row| row.key == key) {
             ui.invoke_ensure_visible();
+            // The list was hidden a moment ago and has no height yet, so scrolling now can leave
+            // the row just out of view: center it once the page is laid out.
+            let window = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_millis(60), move || {
+                if let Some(ui) = window.upgrade() {
+                    ui.invoke_reveal_selected();
+                }
+            });
         } else {
             self.show_message(ui, format!("PID {pid} is hidden by the filter"));
         }
@@ -793,6 +803,20 @@ fn with_app(f: impl FnOnce(&mut App, &MainWindow)) {
 
 /// Paints the native title bar (caption, text, buttons and border) in the current theme's
 /// toolbar colors so it blends into the app. Does nothing until the window exists.
+/// Starts the graphs with the last minute or so the history service recorded, if it's running,
+/// so they aren't empty when Ferrotop opens.
+fn seed_graphs(app: &mut App) {
+    let Ok(dir) = service_host::data_dir() else { return };
+    let now = ferrotop_core::archive::now_unix();
+    let recent = ferrotop_core::archive::read_seconds(&dir, now.saturating_sub(90), now);
+    if recent.is_empty() {
+        return;
+    }
+    let total_memory = ferrotop_sys::system::memory_status().map_or(0, |m| m.total_physical);
+    app.provider.seed_history(&recent, total_memory);
+    app.perf.seed(&recent);
+}
+
 /// `--service`: runs as the history service, started by the Service Control Manager.
 fn run_history_service() {
     let _ = service_host::run_service(|stop| {
@@ -985,6 +1009,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
     APP.with(|cell| *cell.borrow_mut() = Some(Rc::clone(&app)));
+    seed_graphs(&mut app.borrow_mut());
 
     let sampler = Sampler::spawn(
         REFRESH_INTERVAL,
@@ -1030,6 +1055,10 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     ui.on_close_to_tray_toggled(handler(&ui, &app, App::set_close_to_tray));
     ui.on_history_range_chosen(handler(&ui, &app, App::choose_history_range));
+    ui.on_windows_hidden_toggled(handler(&ui, &app, |app, ui, include: bool| {
+        app.pages.windows_hidden = include;
+        app.load_windows(ui);
+    }));
     let history_service = handler(&ui, &app, |app, ui, ()| app.history_service_clicked(ui));
     ui.on_history_service_clicked(move || history_service(()));
     ui.on_start_at_sign_in_toggled(handler(&ui, &app, App::set_start_at_sign_in));

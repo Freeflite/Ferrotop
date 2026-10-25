@@ -800,6 +800,20 @@ impl PerformanceProvider {
         }
     }
 
+    /// Starts the CPU and memory graphs with what the history service recorded (oldest first),
+    /// so they aren't empty when Ferrotop opens.
+    pub fn seed(&mut self, records: &[crate::archive::SecondRecord]) {
+        let skip = records.len().saturating_sub(PERF_HISTORY);
+        for record in &records[skip..] {
+            self.cpu.push(f64::from(record.cpu));
+            self.memory_used.push(record.memory_used as f64);
+            self.commit.push(record.commit as f64);
+            if record.cpu_temp.is_finite() {
+                self.cpu_temp.push(f64::from(record.cpu_temp));
+            }
+        }
+    }
+
     /// Folds in CPU use from a process sample: `cpu_usage` is the machine-wide CPU fraction from
     /// the process provider (so both views agree), `cpus` each logical processor's times.
     pub fn update_cpu(&mut self, cpu_usage: f32, cpus: &[CpuTimes]) {

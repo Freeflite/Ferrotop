@@ -16,6 +16,7 @@ use ferrotop_core::network::connections_table;
 use ferrotop_core::properties::{self, Context, Loaded, Tab, ThreadsSnapshot, services_table};
 use ferrotop_core::provider::{ProcessKey, ProcessState};
 use ferrotop_core::table::Sort;
+use ferrotop_core::window_list;
 use ferrotop_sys::desktop::{self, WindowInfo};
 use ferrotop_sys::service::ServiceDetails;
 use slint::{ModelRc, SharedString, VecModel};
@@ -47,6 +48,10 @@ pub struct Pages {
     properties: TableView,
     stack: TableView,
     tools: TableView,
+    windows: TableView,
+    windows_loading: bool,
+    /// Also list hidden windows on the Windows page.
+    pub(crate) windows_hidden: bool,
     properties_state: Option<Properties>,
     tab_titles: Rc<VecModel<SharedString>>,
     actions: Rc<VecModel<SharedString>>,
@@ -74,6 +79,9 @@ impl Default for Pages {
             properties: TableView::new(None),
             stack: TableView::new(None),
             tools: TableView::new(None),
+            windows: TableView::new(Some(Sort { column: 0, ascending: true })),
+            windows_loading: false,
+            windows_hidden: false,
             properties_state: None,
             tab_titles: Rc::new(VecModel::from(
                 Tab::ALL.iter().map(|tab| SharedString::from(tab.title())).collect::<Vec<_>>(),
@@ -109,6 +117,9 @@ impl Pages {
         ui.set_stack_rows(self.stack.rows_model());
         ui.set_tools_columns(self.tools.columns_model());
         ui.set_tools_rows(self.tools.rows_model());
+        ui.set_windows_columns(self.windows.columns_model());
+        ui.set_windows_rows(self.windows.rows_model());
+        self.windows.empty_text = "Loading windows…".into();
         self.history.bind(ui);
         ui.set_properties_tabs(ModelRc::from(Rc::clone(&self.tab_titles)));
         ui.set_properties_actions(ModelRc::from(Rc::clone(&self.actions)));
@@ -124,6 +135,7 @@ impl Pages {
             TableId::Stack,
             TableId::Tools,
             TableId::History,
+            TableId::Windows,
         ] {
             self.push(ui, id);
         }
@@ -138,6 +150,7 @@ impl Pages {
             TableId::Stack => &mut self.stack,
             TableId::Tools => &mut self.tools,
             TableId::History => &mut self.history.view,
+            TableId::Windows => &mut self.windows,
         }
     }
 
@@ -152,6 +165,7 @@ impl Pages {
             TableId::Stack => ui.set_stack_meta(meta),
             TableId::Tools => ui.set_tools_meta(meta),
             TableId::History => ui.set_history_meta(meta),
+            TableId::Windows => ui.set_windows_meta(meta),
         }
     }
 
@@ -225,7 +239,7 @@ impl App {
     /// Double-click or Enter on a row.
     fn table_activated(&mut self, ui: &MainWindow, id: TableId) {
         match id {
-            TableId::Services | TableId::Network | TableId::Find => {
+            TableId::Services | TableId::Network | TableId::Find | TableId::Windows => {
                 if let Some(pid) = self.selected_pid(id) {
                     self.go_to_process(ui, pid);
                 }
@@ -242,6 +256,7 @@ impl App {
         let column = match id {
             TableId::Services => 4,
             TableId::Network | TableId::Find => 1,
+            TableId::Windows => window_list::PID_COLUMN,
             _ => return None,
         };
         let row = self.pages.view(id).selected_row()?;
@@ -275,7 +290,14 @@ impl App {
                     self.start_tool(ui, tool, remote);
                 }
             }
-            (TableId::Services | TableId::Network | TableId::Find, _) => {
+            (TableId::Windows, 1) => {
+                if let Some(handle) = self.pages.windows.selected_row().map(window_list::handle_of)
+                    && let Err(error) = desktop::bring_to_front(handle)
+                {
+                    self.show_message(ui, format!("Couldn't bring the window to the front: {error}"));
+                }
+            }
+            (TableId::Services | TableId::Network | TableId::Find | TableId::Windows, _) => {
                 if let Some(pid) = self.selected_pid(id) {
                     self.go_to_process(ui, pid);
                 }
@@ -482,6 +504,7 @@ impl App {
                 self.tabulate_services(ui);
             }
             3 => self.load_network(ui),
+            crate::WINDOWS_PAGE => self.load_windows(ui),
             PROPERTIES_PAGE => {
                 let Some(state) = self.pages.properties_state.as_ref() else { return };
                 match state.tab {
@@ -607,6 +630,35 @@ impl App {
         });
     }
 
+    // ----- Windows -----
+
+    pub(crate) fn load_windows(&mut self, ui: &MainWindow) {
+        if self.pages.windows_loading {
+            return;
+        }
+        self.pages.windows_loading = true;
+        let _ = ui;
+        background(desktop::top_level_windows, |app, ui, result| {
+            app.pages.windows_loading = false;
+            match result {
+                Ok(windows) => {
+                    let names = app.process_names();
+                    let table = window_list::windows_table(&windows, &names, app.pages.windows_hidden);
+                    app.pages.windows.status = if app.pages.windows_hidden {
+                        format!("{} windows", windows.len())
+                    } else {
+                        let others = windows.len() - table.rows.len();
+                        format!("{} windows ({others} hidden or untitled not shown)", table.rows.len())
+                    };
+                    app.pages.windows.empty_text = "No windows".into();
+                    app.pages.windows.set_table(table);
+                }
+                Err(error) => app.pages.windows.clear(&format!("Couldn't list windows: {error}")),
+            }
+            app.pages.push(ui, TableId::Windows);
+        });
+    }
+
     // ----- Ping and trace route -----
 
     fn start_tool(&mut self, ui: &MainWindow, tool: Tool, target: String) {
@@ -675,12 +727,16 @@ impl App {
             let _ = slint::invoke_from_event_loop(move || crate::with_app(|app, ui| app.window_picked(ui, picked)));
         });
         match picking {
-            Ok(()) => self.show_message(ui, "Click any window to find its process (right-click to cancel)".into()),
+            Ok(()) => {
+                ui.set_picking(true);
+                self.show_message(ui, "Click any window to find its process (right-click to cancel)".into());
+            }
             Err(error) => self.show_message(ui, format!("Couldn't watch for a click: {error}")),
         }
     }
 
     fn window_picked(&mut self, ui: &MainWindow, picked: Option<WindowInfo>) {
+        ui.set_picking(false);
         let Some(window) = picked else { return self.show_message(ui, "Cancelled".into()) };
         self.go_to_process(ui, window.pid);
         let name = self.provider.items().find(|item| item.key.pid == window.pid).map(|item| item.name.clone());

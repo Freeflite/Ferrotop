@@ -26,6 +26,7 @@ pub mod sampler;
 pub mod settings;
 pub mod table;
 pub mod tree;
+pub mod window_list;
 
 #[cfg(test)]
 mod fuzz;

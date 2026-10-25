@@ -62,6 +62,8 @@ struct Loaded {
     busiest: Vec<ProgramSummary>,
     /// Seconds recorded in the range.
     seconds: usize,
+    /// The oldest of them.
+    first: Option<u32>,
 }
 
 pub struct HistoryPage {
@@ -71,6 +73,8 @@ pub struct HistoryPage {
     loading: bool,
     loaded_at: Option<Instant>,
     seconds: usize,
+    /// When the oldest record in the range was taken.
+    first: Option<u32>,
     service: ServiceState,
     /// The installed service's version, when it isn't this one.
     outdated: Option<String>,
@@ -86,6 +90,7 @@ impl Default for HistoryPage {
             loading: false,
             loaded_at: None,
             seconds: 0,
+            first: None,
             service: ServiceState::NotInstalled,
             outdated: None,
             busy: false,
@@ -154,7 +159,15 @@ impl App {
                 format!("The history service is Ferrotop {version}; update it to this version ({}).", env!("CARGO_PKG_VERSION"))
             }
             (ServiceState::Running, 0) => "Recording. The first figures appear within a few seconds.".to_owned(),
-            (ServiceState::Running, _) => format!("Recording around the clock; {} days are kept.", archive::KEEP_DAYS),
+            (ServiceState::Running, _) => {
+                let span = history.first.map_or(0, |first| archive::now_unix().saturating_sub(u64::from(first)));
+                if span + 120 < history.range.seconds() {
+                    // Not a full range yet: say so, as the graph only fills its right-hand end.
+                    format!("Recording; {} recorded so far.", format::duration(span))
+                } else {
+                    format!("Recording around the clock; {} days are kept.", archive::KEEP_DAYS)
+                }
+            }
             (ServiceState::Stopped | ServiceState::Changing, _) => {
                 "The history service is installed but not running.".to_owned()
             }
@@ -183,7 +196,7 @@ impl App {
                 let to = archive::now_unix();
                 let from = to.saturating_sub(range.seconds());
                 let Ok(dir) = service_host::data_dir() else {
-                    return Loaded { range, points: Vec::new(), busiest: Vec::new(), seconds: 0 };
+                    return Loaded { range, points: Vec::new(), busiest: Vec::new(), seconds: 0, first: None };
                 };
                 let seconds = archive::read_seconds(&dir, from, to);
                 Loaded {
@@ -191,6 +204,7 @@ impl App {
                     points: archive::buckets(&seconds, from, to, POINTS),
                     busiest: archive::busiest(&archive::read_minutes(&dir, from, to)),
                     seconds: seconds.len(),
+                    first: seconds.first().map(|s| s.time),
                 }
             },
             |app, ui, loaded| app.history_loaded(ui, loaded),
@@ -207,6 +221,7 @@ impl App {
         let total_memory = self.provider.stats().memory.total_physical;
         crate::sync_model(&self.pages.history.graphs, graphs(&loaded.points, total_memory));
         self.pages.history.seconds = loaded.seconds;
+        self.pages.history.first = loaded.first;
         let history = &mut self.pages.history;
         history.view.set_table(busiest_table(&loaded.busiest));
         history.view.status = match loaded.busiest.len() {

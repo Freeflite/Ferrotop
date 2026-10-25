@@ -11,7 +11,7 @@ import { HistoryGraph, HistoryGraphView } from "history.slint";
 export { Theme, ProcessRow, ProcessAction, CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, Stat, TableColumn, TableRowData }
 
 // The generic tables, and what happened to one of them.
-export enum TableId { services, network, find, properties, stack, tools, history }
+export enum TableId { services, network, find, properties, stack, tools, history, windows }
 export enum TableEvent { sort, click, activate, move, action }
 
 // Everything about a table except its columns and rows (which are models set once from Rust).
@@ -30,7 +30,7 @@ export struct AffinityCpu {
 }
 
 // Pages: 0 Processes, 1 Performance, 2 Services, 3 Network, 4 process properties, 5 Find,
-// 6 Ping and trace route, 7 History.
+// 6 Ping and trace route, 7 History, 8 Windows.
 export component MainWindow inherits Window {
     title: "Ferrotop";
     icon: @image-url("../assets/ferrotop-256.png");
@@ -152,9 +152,17 @@ export component MainWindow inherits Window {
 
     // Find handles, DLLs or windows page.
     in property <bool> find-running;
+    // Waiting for a click on some window (Pick a window).
+    in property <bool> picking;
 
     // Ping and trace route page.
     in property <bool> tools-running;
+
+    // Windows page.
+    in property <[TableColumn]> windows-columns;
+    in property <[TableRowData]> windows-rows;
+    in property <TableMeta> windows-meta;
+    in-out property <bool> windows-hidden;
 
     // History page.
     in property <[TableColumn]> history-columns;
@@ -225,6 +233,7 @@ export component MainWindow inherits Window {
     callback tools-start(int, string);
     callback tools-cancel();
     callback history-range-chosen(int);
+    callback windows-hidden-toggled(bool);
     // Installs the history service, or removes it if it's installed.
     callback history-service-clicked();
     callback run-task(string, bool);
@@ -251,6 +260,8 @@ export component MainWindow inherits Window {
             tools-address.focus();
         } else if (page == 7) {
             history.focus-table();
+        } else if (page == 8) {
+            windows.focus-table();
         }
         root.page-shown(page);
     }
@@ -268,6 +279,8 @@ export component MainWindow inherits Window {
             tools.focus-table();
         } else if (table == TableId.history) {
             history.focus-table();
+        } else if (table == TableId.windows) {
+            windows.focus-table();
         }
     }
 
@@ -323,6 +336,14 @@ export component MainWindow inherits Window {
     property <length> description-x: root.user-x + root.user-width;
     property <length> signer-x: root.description-x + root.description-width;
 
+    // Scrolls the selected process to the middle of the list, after jumping to it.
+    public function reveal-selected() {
+        if (root.selected-index < 0) {
+            return;
+        }
+        list.content-y = max(min(0px, list.visible-height - root.rows.length * Theme.row-height), min(0px, -(root.selected-index * Theme.row-height - (list.visible-height - Theme.row-height) / 2)));
+    }
+
     public function ensure-visible() {
         if (root.selected-index < 0) {
             return;
@@ -355,6 +376,10 @@ export component MainWindow inherits Window {
             }
             if (event.modifiers.control && event.text == "5") {
                 root.show-page(7);
+                return accept;
+            }
+            if (event.modifiers.control && event.text == "6") {
+                root.show-page(8);
                 return accept;
             }
             if (root.page == 4 && event.modifiers.control && event.text == Key.Tab) {
@@ -450,6 +475,14 @@ export component MainWindow inherits Window {
                         active: root.page == 7;
                         clicked => {
                             root.show-page(7);
+                        }
+                    }
+
+                    Tab {
+                        text: "Windows";
+                        active: root.page == 8;
+                        clicked => {
+                            root.show-page(8);
                         }
                     }
 
@@ -741,6 +774,10 @@ export component MainWindow inherits Window {
                                 }
                                 if (event.modifiers.control && event.text == "5") {
                                     root.show-page(7);
+                                    return accept;
+                                }
+                                if (event.modifiers.control && event.text == "6") {
+                                    root.show-page(8);
                                     return accept;
                                 }
                                 if (event.text == Key.UpArrow) {
@@ -1183,7 +1220,8 @@ export component MainWindow inherits Window {
                                     alignment: center;
 
                                     Button {
-                                        text: "Pick a window";
+                                        text: root.picking ? "Click a window… (right-click cancels)" : "Pick a window";
+                                        primary: root.picking;
                                         clicked => {
                                             root.pick-window();
                                         }
@@ -1225,6 +1263,88 @@ export component MainWindow inherits Window {
                             }
                             action(index) => {
                                 root.table-event(TableId.find, TableEvent.action, index);
+                            }
+                        }
+                    }
+                }
+
+                // Windows.
+                Rectangle {
+                    visible: root.page == 8;
+                    width: parent.width;
+                    height: parent.height;
+
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        Rectangle {
+                            background: Theme.panel;
+                            height: 50px;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 12px;
+
+                                Text {
+                                    text: "Windows";
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    CheckBox {
+                                        text: "Show all windows (hidden and untitled too)";
+                                        checked <=> root.windows-hidden;
+                                        toggled => {
+                                            root.windows-hidden-toggled(self.checked);
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: "Every window on this desktop and the process it belongs to. Find… → Pick a window jumps straight to the one you click.";
+                                    color: Theme.muted;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+
+                        windows := TablePanel {
+                            vertical-stretch: 1;
+                            columns: root.windows-columns;
+                            rows: root.windows-rows;
+                            content-width: root.windows-meta.content-width;
+                            sort-column: root.windows-meta.sort-column;
+                            sort-ascending: root.windows-meta.sort-ascending;
+                            selected-index: root.windows-meta.selected-index;
+                            status: root.windows-meta.status;
+                            empty-text: root.windows-meta.empty-text;
+                            filter-placeholder: "Filter by process, title or class";
+                            actions: ["Go to process", "Bring to front"];
+                            filter-changed(text) => {
+                                root.table-filter(TableId.windows, text);
+                            }
+                            sort-by(column) => {
+                                root.table-event(TableId.windows, TableEvent.sort, column);
+                            }
+                            row-clicked(index) => {
+                                root.table-event(TableId.windows, TableEvent.click, index);
+                            }
+                            row-activated(index) => {
+                                root.table-event(TableId.windows, TableEvent.activate, index);
+                            }
+                            move-selection(step) => {
+                                root.table-event(TableId.windows, TableEvent.move, step);
+                            }
+                            action(index) => {
+                                root.table-event(TableId.windows, TableEvent.action, index);
                             }
                         }
                     }
@@ -1331,6 +1451,12 @@ export component MainWindow inherits Window {
                                 for graph in root.history-graphs: HistoryGraphView {
                                     data: graph;
                                     axis-start: root.history-axis-start;
+                                }
+
+                                // Takes up the room while there are no graphs yet: an empty layout
+                                // would cap the whole window's height.
+                                Rectangle {
+                                    vertical-stretch: root.history-graphs.length == 0 ? 1 : 0;
                                 }
                             }
 

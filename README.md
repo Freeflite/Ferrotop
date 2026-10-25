@@ -43,6 +43,8 @@ structure layouts are ported from System Informer's C sources (MIT). See
     executable regions are flagged), **Handles** (type, name, access; process and thread handles
     name their target), **Windows** (title, class, state and position; **Bring to front**),
     **Environment**, **Token** (user, integrity, elevation, groups, privileges) and **Services**.
+- **Windows** (Ctrl+6): every window on the desktop with the process it belongs to; go to its
+  process or bring it to the front.
 - **Find handles, DLLs or windows** across every process (View → Find…), or **Pick a window**:
   click any window on screen to jump to the process that owns it. **Run** a new program
   (View → Run…).
@@ -131,7 +133,7 @@ driver. Ferrotop ships no driver, but uses one of these if it's there:
 
 | Key | Action |
 | --- | --- |
-| Ctrl+1 … Ctrl+5 | Processes, Performance, Services, Network, History |
+| Ctrl+1 … Ctrl+6 | Processes, Performance, Services, Network, History, Windows |
 | ↑ / ↓, PgUp / PgDn | Move the selection |
 | ← / → | Collapse / expand the selected node |
 | Enter, double-click | Process properties |
