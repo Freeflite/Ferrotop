@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use ferrotop_sys::control;
+use ferrotop_sys::desktop::{self, WindowInfo};
 use ferrotop_sys::environment;
 use ferrotop_sys::handles::{self, HandleInfo, HandleTarget};
 use ferrotop_sys::memory::{self, MemoryRegion};
@@ -28,18 +29,20 @@ pub enum Tab {
     Modules,
     Memory,
     Handles,
+    Windows,
     Environment,
     Token,
     Services,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::General,
         Tab::Threads,
         Tab::Modules,
         Tab::Memory,
         Tab::Handles,
+        Tab::Windows,
         Tab::Environment,
         Tab::Token,
         Tab::Services,
@@ -52,6 +55,7 @@ impl Tab {
             Tab::Modules => "Modules",
             Tab::Memory => "Memory",
             Tab::Handles => "Handles",
+            Tab::Windows => "Windows",
             Tab::Environment => "Environment",
             Tab::Token => "Token",
             Tab::Services => "Services",
@@ -71,6 +75,7 @@ impl Tab {
             Tab::Modules => ("module", "modules"),
             Tab::Memory => ("region", "regions"),
             Tab::Handles => ("handle", "handles"),
+            Tab::Windows => ("window", "windows"),
             Tab::Environment => ("variable", "variables"),
             Tab::Token => ("entry", "entries"),
             Tab::Services => ("service", "services"),
@@ -113,6 +118,7 @@ pub enum Loaded {
     Modules(Vec<(ModuleInfo, VersionInfo)>),
     Memory(Vec<MemoryRegion>),
     Handles(Vec<HandleInfo>),
+    Windows(Vec<WindowInfo>),
     Environment(Vec<(String, String)>),
     Token(TokenSnapshot),
     Services(Vec<ServiceDetails>),
@@ -169,6 +175,7 @@ pub fn load(tab: Tab, pid: u32, image_path: Option<&str>) -> Result<Loaded, Stri
         }
         Tab::Memory => Loaded::Memory(memory::regions(pid).map_err(fail)?),
         Tab::Handles => Loaded::Handles(handles::handles(pid).map_err(fail)?),
+        Tab::Windows => Loaded::Windows(desktop::windows_of(pid).map_err(fail)?),
         Tab::Environment => Loaded::Environment(environment::environment(pid).map_err(fail)?),
         Tab::Token => {
             let details = token::token_details(pid).map_err(fail)?;
@@ -220,6 +227,7 @@ pub fn table(loaded: &Loaded, context: Context<'_>) -> Table {
         Loaded::Modules(modules) => modules_table(modules),
         Loaded::Memory(regions) => memory_table(regions),
         Loaded::Handles(handles) => handles_table(handles, context.names),
+        Loaded::Windows(windows) => windows_table(windows),
         Loaded::Environment(variables) => environment_table(variables),
         Loaded::Token(token) => token_table(token),
         Loaded::Services(services) => services_table(services, &HashMap::new()),
@@ -496,6 +504,37 @@ fn handles_table(handles: &[HandleInfo], names: &HashMap<u32, String>) -> Table 
     table
 }
 
+/// A process's top-level windows; each row's ID is the window handle.
+fn windows_table(windows: &[WindowInfo]) -> Table {
+    let mut table = Table::new(&[
+        Column::text("Title", 320),
+        Column::text("Class", 240),
+        Column::text("State", 90),
+        Column::text("Bounds", 200),
+        Column::number("Thread", 80),
+        Column::number("Handle", 110),
+    ]);
+    for window in windows {
+        let bounds = window.rect.map_or_else(String::new, |(left, top, right, bottom)| {
+            format!("{} × {} at {left}, {top}", right - left, bottom - top)
+        });
+        let tone = if window.visible { Tone::Plain } else { Tone::Muted };
+        table.push(
+            window.handle as u64,
+            vec![
+                Cell::text(&window.title),
+                Cell::text(&window.class),
+                Cell::text(window.state()),
+                Cell::text(bounds),
+                Cell::count(u64::from(window.tid)),
+                Cell::hex(window.handle as u64),
+            ],
+            tone,
+        );
+    }
+    table
+}
+
 fn environment_table(variables: &[(String, String)]) -> Table {
     let mut table = Table::new(&[Column::text("Variable", 220), Column::text("Value", 700)]);
     for (i, (name, value)) in variables.iter().enumerate() {
@@ -629,7 +668,8 @@ mod tests {
             let loaded = load(tab, me, path.as_deref()).unwrap_or_else(|e| panic!("{tab:?}: {e}"));
             let names = HashMap::new();
             let table = table(&loaded, Context { item: None, names: &names, previous_threads: None, cpu_count: 1 });
-            if tab != Tab::General {
+            // A test runner has no windows.
+            if tab != Tab::General && tab != Tab::Windows {
                 assert!(!table.rows.is_empty(), "{tab:?} produced no rows");
             }
             assert!(table.rows.iter().all(|r| r.cells.len() == table.columns.len()), "{tab:?}");

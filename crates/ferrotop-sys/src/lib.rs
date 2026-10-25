@@ -14,6 +14,7 @@ mod buffer;
 pub mod connections;
 pub mod control;
 pub mod cpu_temp;
+pub mod desktop;
 pub mod disk;
 pub mod environment;
 mod error;

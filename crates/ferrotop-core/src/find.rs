@@ -1,5 +1,9 @@
-//! Find handles or DLLs: searches every process's loaded modules and named handles.
+//! Find handles, DLLs or windows: searches every process's loaded modules, named handles and
+//! top-level windows.
 
+use std::collections::HashMap;
+
+use ferrotop_sys::desktop::top_level_windows;
 use ferrotop_sys::handles::handles;
 use ferrotop_sys::modules::modules;
 
@@ -10,20 +14,38 @@ use crate::table::{Cell, Column, Table, Tone};
 pub struct Match {
     pub pid: u32,
     pub process: String,
-    /// `DLL` for a module, else the handle's object type.
+    /// `DLL` for a module, `Window` for a window, else the handle's object type.
     pub kind: String,
     pub name: String,
+    /// The handle, or a window's handle.
     pub handle: Option<u64>,
 }
 
-/// Searches `processes` (`(pid, name)`) for modules and handles whose name or path contains
-/// `query` (case-insensitive). `progress` is called with (done, total) after each process; it
-/// returns `false` to cancel. Processes Ferrotop can't open are skipped.
+/// Searches `processes` (`(pid, name)`) for windows whose title or class, and modules and
+/// handles whose name or path, contains `query` (case-insensitive). `progress` is called with
+/// (done, total) after each process; it returns `false` to cancel. Processes Ferrotop can't
+/// open are skipped.
 pub fn search(query: &str, processes: &[(u32, String)], mut progress: impl FnMut(usize, usize) -> bool) -> Vec<Match> {
     let needle = query.trim().to_lowercase();
     let mut matches = Vec::new();
     if needle.is_empty() {
         return matches;
+    }
+    // Windows are all listed in one call, so they come first.
+    let names: HashMap<u32, &String> = processes.iter().map(|(pid, name)| (*pid, name)).collect();
+    for window in top_level_windows().unwrap_or_default() {
+        let Some(process) = names.get(&window.pid) else { continue };
+        if !(window.title.to_lowercase().contains(&needle) || window.class.to_lowercase().contains(&needle)) {
+            continue;
+        }
+        let title = if window.title.is_empty() { "(untitled)" } else { &window.title };
+        matches.push(Match {
+            pid: window.pid,
+            process: (*process).clone(),
+            kind: "Window".into(),
+            name: format!("{title}  ({})", window.class),
+            handle: Some(window.handle as u64),
+        });
     }
     for (done, (pid, process)) in processes.iter().enumerate() {
         if *pid == 0 {

@@ -189,6 +189,8 @@ export component MainWindow inherits Window {
     callback properties-back();
     callback find-start(string);
     callback find-cancel();
+    // Waits for a click on any window, then shows its process.
+    callback pick-window();
     callback run-task(string, bool);
     callback affinity-toggled(int, bool);
     callback affinity-all(bool);
@@ -1052,7 +1054,7 @@ export component MainWindow inherits Window {
                                 }
 
                                 Text {
-                                    text: "Find handles or DLLs";
+                                    text: "Find handles, DLLs or windows";
                                     font-size: 15px;
                                     font-weight: 700;
                                     color: Theme.text;
@@ -1064,7 +1066,7 @@ export component MainWindow inherits Window {
 
                                     query := LineEdit {
                                         width: 320px;
-                                        placeholder-text: "Part of a file, key, mutex or DLL name";
+                                        placeholder-text: "Part of a window title, file, key, mutex or DLL name";
                                         accepted(text) => {
                                             root.find-start(text);
                                         }
@@ -1083,6 +1085,17 @@ export component MainWindow inherits Window {
                                             } else {
                                                 root.find-start(query.text);
                                             }
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: "Pick a window";
+                                        clicked => {
+                                            root.pick-window();
                                         }
                                     }
                                 }

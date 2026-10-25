@@ -13,6 +13,7 @@ use ferrotop_core::network::connections_table;
 use ferrotop_core::properties::{self, Context, Loaded, Tab, ThreadsSnapshot, services_table};
 use ferrotop_core::provider::{ProcessKey, ProcessState};
 use ferrotop_core::table::Sort;
+use ferrotop_sys::desktop::{self, WindowInfo};
 use ferrotop_sys::service::ServiceDetails;
 use slint::{ModelRc, SharedString, VecModel};
 
@@ -96,7 +97,7 @@ impl Pages {
         ui.set_properties_actions(ModelRc::from(Rc::clone(&self.actions)));
         self.services.empty_text = "Loading services…".into();
         self.network.empty_text = "Loading connections…".into();
-        self.find.empty_text = "Type part of a name and press Search. Every process is searched for loaded DLLs and named handles (files, registry keys, mutexes, sections…). Run as administrator to include other users' and system processes.".into();
+        self.find.empty_text = "Type part of a name and press Search. Every process is searched for windows, loaded DLLs and named handles (files, registry keys, mutexes, sections…). Run as administrator to include other users' and system processes. Or press Pick a window and click any window to find its process.".into();
         for id in [TableId::Services, TableId::Network, TableId::Find, TableId::Properties, TableId::Stack] {
             self.push(ui, id);
         }
@@ -146,6 +147,8 @@ pub fn connect(ui: &MainWindow, app: &Rc<RefCell<App>>) {
         }
     });
     ui.on_find_cancel(move || cancel(()));
+    let pick = handler(ui, app, |app, ui, ()| app.start_window_pick(ui));
+    ui.on_pick_window(move || pick(()));
 }
 
 impl App {
@@ -231,6 +234,14 @@ impl App {
                             self.show_message(ui, format!("Couldn't open the file location: {error}"));
                         }
                     }
+                    // The Windows tab's row IDs are window handles.
+                    Some(Tab::Windows) => {
+                        if let Some(handle) = self.pages.properties.selected_row().map(|r| r.id as usize)
+                            && let Err(error) = ferrotop_sys::desktop::bring_to_front(handle)
+                        {
+                            self.show_message(ui, format!("Couldn't bring the window to the front: {error}"));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -298,6 +309,7 @@ impl App {
         let actions: &[&str] = match tab {
             Tab::Threads => &["Stack"],
             Tab::Modules => &["Open file location"],
+            Tab::Windows => &["Bring to front"],
             _ => &[],
         };
         crate::sync_model(&self.pages.actions, actions.iter().map(|a| SharedString::from(*a)).collect());
@@ -366,6 +378,7 @@ impl App {
         let exited = item.is_none_or(|i| i.state == ProcessState::Removed);
         self.pages.properties.empty_text = match tab {
             Tab::Services => "This process doesn't host any services.".into(),
+            Tab::Windows => "This process has no windows on this desktop.".into(),
             Tab::General => String::new(),
             _ => "Nothing to show.".into(),
         };
@@ -537,7 +550,28 @@ impl App {
         });
     }
 
-    // ----- Find handles or DLLs -----
+    // ----- Pick a window -----
+
+    fn start_window_pick(&mut self, ui: &MainWindow) {
+        let picking = desktop::pick_window(|picked| {
+            // This runs inside the mouse hook: finish from the event loop instead.
+            let _ = slint::invoke_from_event_loop(move || crate::with_app(|app, ui| app.window_picked(ui, picked)));
+        });
+        match picking {
+            Ok(()) => self.show_message(ui, "Click any window to find its process (right-click to cancel)".into()),
+            Err(error) => self.show_message(ui, format!("Couldn't watch for a click: {error}")),
+        }
+    }
+
+    fn window_picked(&mut self, ui: &MainWindow, picked: Option<WindowInfo>) {
+        let Some(window) = picked else { return self.show_message(ui, "Cancelled".into()) };
+        self.go_to_process(ui, window.pid);
+        let name = self.provider.items().find(|item| item.key.pid == window.pid).map(|item| item.name.clone());
+        let title = if window.title.is_empty() { &window.class } else { &window.title };
+        self.show_message(ui, format!("“{title}” belongs to {} (PID {})", name.unwrap_or_default(), window.pid));
+    }
+
+    // ----- Find handles, DLLs or windows -----
 
     fn start_find(&mut self, ui: &MainWindow, query: String) {
         if self.pages.find_cancel.is_some() {

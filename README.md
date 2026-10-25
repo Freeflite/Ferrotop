@@ -38,9 +38,10 @@ structure layouts are ported from System Informer's C sources (MIT). See
     context switches; **Stack** shows a thread's call stack.
   - **Modules**, **Memory** (every region with type, protection and mapped file; writable and
     executable regions are flagged), **Handles** (type, name, access; process and thread handles
-    name their target), **Environment**, **Token** (user, integrity, elevation, groups,
-    privileges) and **Services**.
-- **Find handles or DLLs** across every process (View → Find…), and **Run** a new program
+    name their target), **Windows** (title, class, state and position; **Bring to front**),
+    **Environment**, **Token** (user, integrity, elevation, groups, privileges) and **Services**.
+- **Find handles, DLLs or windows** across every process (View → Find…), or **Pick a window**:
+  click any window on screen to jump to the process that owns it. **Run** a new program
   (View → Run…).
 
 ### Performance
