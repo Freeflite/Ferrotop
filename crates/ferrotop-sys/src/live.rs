@@ -62,6 +62,8 @@ const ENTRY_WORDS: usize = 5;
 const TOTAL_WORDS: usize = W_PROCESSES + MAX_PROCESSES * ENTRY_WORDS;
 const TOTAL_BYTES: usize = TOTAL_WORDS * 4;
 const FLAG_TEMPS: u32 = 1;
+/// The standard right to read an object's security descriptor, needed to check its owner.
+const READ_CONTROL: u32 = 0x0002_0000;
 // The sequence must be 8-byte aligned, and the whole section stays small.
 const _: () = assert!(W_SEQUENCE.is_multiple_of(2) && TOTAL_BYTES < 256 * 1024);
 
@@ -166,7 +168,7 @@ impl LivePublisher {
         let mapping = unsafe { OwnedHandle::from_raw_handle(raw) };
         // Left by an earlier run of the service (a window still had it open) is fine; one
         // anybody else made is not ours to write.
-        if existed && !owned_by_system(&mapping) {
+        if existed && owned_by_system(&mapping) != Some(true) {
             return Err(Error::Other { message: "another program owns the live-data section" });
         }
         let view = View::map(&mapping, FILE_MAP_WRITE | FILE_MAP_READ)?;
@@ -216,8 +218,9 @@ impl LivePublisher {
     }
 }
 
-/// Whether a kernel object belongs to LocalSystem.
-fn owned_by_system(object: &OwnedHandle) -> bool {
+/// Whether a kernel object belongs to LocalSystem; `None` if its owner couldn't be read (the
+/// handle needs `READ_CONTROL`).
+fn owned_by_system(object: &OwnedHandle) -> Option<bool> {
     let mut owner: PSID = std::ptr::null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     // SAFETY: `object` is live and the out pointers valid; only the owner is asked for.
@@ -233,8 +236,10 @@ fn owned_by_system(object: &OwnedHandle) -> bool {
             &mut descriptor,
         )
     };
-    // SAFETY: `owner` points into `descriptor`, still allocated.
-    let system = status == 0 && !owner.is_null() && unsafe { IsWellKnownSid(owner, WinLocalSystemSid) } != 0;
+    let system = (status == 0 && !owner.is_null()).then(|| {
+        // SAFETY: `owner` points into `descriptor`, still allocated.
+        unsafe { IsWellKnownSid(owner, WinLocalSystemSid) != 0 }
+    });
     // SAFETY: frees the descriptor GetSecurityInfo allocated (null is allowed).
     unsafe { LocalFree(descriptor as HLOCAL) };
     system
@@ -255,15 +260,15 @@ impl LiveReader {
 
     fn open_named(section: &str, require_system: bool) -> Result<Self> {
         let name = wide(section);
-        // SAFETY: the name is NUL-terminated; read access only.
-        let raw = unsafe { OpenFileMappingW(FILE_MAP_READ, 0, name.as_ptr()) };
+        // SAFETY: the name is NUL-terminated; read access, plus reading the owner.
+        let raw = unsafe { OpenFileMappingW(FILE_MAP_READ | READ_CONTROL, 0, name.as_ptr()) };
         if raw.is_null() {
             return Err(Error::last_win32("OpenFileMappingW"));
         }
         // SAFETY: `raw` is a section handle we own.
         let mapping = unsafe { OwnedHandle::from_raw_handle(raw) };
         // Only trust a section the service (LocalSystem) made.
-        if require_system && !owned_by_system(&mapping) {
+        if require_system && owned_by_system(&mapping) != Some(true) {
             return Err(Error::Other { message: "the live-data section isn't the service's" });
         }
         let view = View::map(&mapping, FILE_MAP_READ)?;
@@ -389,7 +394,9 @@ mod tests {
         let shorter = LiveSnapshot { temps: None, processes: vec![snapshot.processes[1]], ..snapshot };
         publisher.publish(&shorter);
         assert_eq!(reader.read(), Some(shorter));
-        // The service's section is LocalSystem's; this test's isn't, so the real check refuses it.
+        // A reader can read the owner (this test's section is this user's, not LocalSystem's),
+        // so the real check refuses it for the right reason.
+        assert_eq!(owned_by_system(&reader._mapping), Some(false));
         assert!(LiveReader::open_named(&name, true).is_err());
     }
 
