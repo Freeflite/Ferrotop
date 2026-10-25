@@ -135,6 +135,14 @@ surface small, contained and auditable. More in [SECURITY.md](SECURITY.md).
 - **No network**, except the optional loopback request to LibreHardwareMonitor. No telemetry and
   no symbol downloads.
 
+## Download
+
+Get `ferrotop.exe` from [Releases](https://github.com/Freeflite/Ferrotop/releases): one file,
+nothing to install, 64-bit Windows 10 or 11. It isn't code-signed, so the first run shows
+SmartScreen's "Windows protected your PC"; choose **More info → Run anyway**. Each release lists
+SHA-256 checksums and has a signed build-provenance attestation
+(`gh attestation verify ferrotop.exe --repo Freeflite/Ferrotop`), or build it yourself below.
+
 ## Building
 
 Requires Windows 10/11, the Visual Studio C++ build tools, and Rust. `rust-toolchain.toml` pins

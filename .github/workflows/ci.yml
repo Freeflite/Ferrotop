@@ -1,5 +1,7 @@
 # Every push and pull request: format, lint, test, supply-chain policy, Miri and a short fuzz run.
-# Tags (v*): a hardened, reproducible release build with a signed build-provenance attestation.
+# Tags (v*): a hardened, reproducible release build with a signed build-provenance attestation,
+# published as a GitHub release. Run it by hand (Actions → CI → Run workflow) for a dry run that
+# builds and packages the release without publishing it.
 #
 # Third-party actions are pinned to full commit SHAs (the comment says which release), so a
 # moved tag can't change what runs here.
@@ -10,6 +12,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
   schedule:
     # Weekly, so new RustSec advisories against existing dependencies are noticed.
     - cron: "17 4 * * 1"
@@ -88,7 +91,7 @@ jobs:
 
   release:
     name: Release build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [test, deny, miri, fuzz]
     runs-on: windows-latest
     permissions:
@@ -103,11 +106,46 @@ jobs:
       - name: Build, check mitigations, verify reproducibility
         shell: pwsh
         run: ./scripts/build-release.ps1 -Verify
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      - name: Package the exe, its licenses and checksums
+        shell: pwsh
+        env:
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: ./scripts/package-release.ps1 -Tag $env:TAG
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: target/release/ferrotop.exe
+          subject-path: |
+            dist/ferrotop.exe
+            dist/*.zip
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ferrotop-${{ github.ref_name }}
-          path: target/release/ferrotop.exe
+          name: release
+          path: dist/
           if-no-files-found: error
+
+  # Only this job may write to the repository, and only for tags; the build above never can.
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          notes="docs/releases/$TAG.md"
+          test -f "$notes" || { echo "Missing release notes: $notes"; exit 1; }
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "Ferrotop ${TAG#v}" --notes-file "$notes" --verify-tag
