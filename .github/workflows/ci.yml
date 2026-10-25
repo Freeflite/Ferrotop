@@ -89,10 +89,48 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "fuzz target $target failed" }
           }
 
+  service:
+    name: History service end to end
+    needs: [test]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo build --release --locked
+      - run: cargo build --release --locked -p ferrotop-core --example history_check
+      # The runner is a throwaway VM with administrator rights, so the service can really be
+      # installed, checked from the outside, and removed.
+      - name: Install, check and remove the service
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path target/release/ferrotop.exe).Path
+          $install = Start-Process -FilePath $exe -ArgumentList '--install-service' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "install failed with exit code $($install.ExitCode)" }
+          $service = Get-Service Ferrotop
+          if ($service.Status -ne 'Running') { throw "the service is $($service.Status)" }
+          $config = Get-CimInstance Win32_Service -Filter "Name='Ferrotop'"
+          "runs: $($config.PathName) as $($config.StartName)"
+          if ($config.PathName -notlike '*Program Files*Ferrotop*ferrotop.exe*') { throw 'the service should run from Program Files' }
+          $data = Join-Path $env:ProgramData 'Ferrotop'
+          $owner = (Get-Acl $data).Owner
+          "data folder owner: $owner"
+          if ($owner -notmatch 'Administrators|SYSTEM') { throw "the data folder is owned by $owner" }
+          Start-Sleep -Seconds 15
+          & ./target/release/examples/history_check.exe
+          if ($LASTEXITCODE -ne 0) { throw 'history check failed' }
+          $uninstall = Start-Process -FilePath $exe -ArgumentList '--uninstall-service' -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "uninstall failed with exit code $($uninstall.ExitCode)" }
+          if (Get-Service Ferrotop -ErrorAction SilentlyContinue) { throw 'the service is still installed' }
+          if (Test-Path (Join-Path $env:ProgramFiles 'Ferrotop/ferrotop.exe')) { throw 'the Program Files copy is still there' }
+          if (-not (Get-ChildItem $data -Filter *.seconds)) { throw 'the history should be kept' }
+          'installed, recorded, published and removed'
+
   release:
     name: Release build
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    needs: [test, deny, miri, fuzz]
+    needs: [test, deny, miri, fuzz, service]
     runs-on: windows-latest
     permissions:
       contents: read
