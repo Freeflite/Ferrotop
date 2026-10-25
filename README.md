@@ -69,6 +69,9 @@ graphs off, its figures fill the pane in large type.
   description and path. Start, stop and restart (asks first; most need administrator).
 - **Network**: every TCP and UDP endpoint (IPv4 and IPv6) with its owning process, addresses,
   ports and state.
+- **Ping and trace route** (View → Ping…, or a connection's Ping / Trace route actions): ICMP
+  echoes through Windows' own API, no administrator needed. Only the address you give is
+  contacted; there's no whois or geolocation lookup, which would send it to a third party.
 
 Every table sorts by any column and has its own filter. **Go to process** jumps from a service,
 connection or search result to the process.

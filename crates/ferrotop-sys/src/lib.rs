@@ -21,6 +21,7 @@ mod error;
 pub mod gpu;
 pub mod handles;
 pub mod hardware;
+pub mod icmp;
 pub mod icon;
 pub mod memory;
 pub mod modules;

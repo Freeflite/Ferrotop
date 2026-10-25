@@ -8,7 +8,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use std::net::IpAddr;
+
 use ferrotop_core::find;
+use ferrotop_core::nettools::{self, Probe, Tool};
 use ferrotop_core::network::connections_table;
 use ferrotop_core::properties::{self, Context, Loaded, Tab, ThreadsSnapshot, services_table};
 use ferrotop_core::provider::{ProcessKey, ProcessState};
@@ -18,7 +21,7 @@ use ferrotop_sys::service::ServiceDetails;
 use slint::{ModelRc, SharedString, VecModel};
 
 use crate::tables::TableView;
-use crate::{App, FIND_PAGE, MainWindow, PROPERTIES_PAGE, TableEvent, TableId, background, handler};
+use crate::{App, FIND_PAGE, MainWindow, PROPERTIES_PAGE, TOOLS_PAGE, TableEvent, TableId, background, handler};
 
 const SERVICES_REFRESH: Duration = Duration::from_secs(5);
 /// How long General-tab facts (priority, affinity...) are trusted before re-reading them.
@@ -43,6 +46,7 @@ pub struct Pages {
     find: TableView,
     properties: TableView,
     stack: TableView,
+    tools: TableView,
     properties_state: Option<Properties>,
     tab_titles: Rc<VecModel<SharedString>>,
     actions: Rc<VecModel<SharedString>>,
@@ -54,6 +58,10 @@ pub struct Pages {
     services_data: Vec<ServiceDetails>,
     network_loading: bool,
     find_cancel: Option<Arc<AtomicBool>>,
+    tools_cancel: Option<Arc<AtomicBool>>,
+    /// The running or last network tool, its target, and its probes so far.
+    tools_run: Option<(Tool, IpAddr)>,
+    tools_probes: Vec<Probe>,
 }
 
 impl Default for Pages {
@@ -64,6 +72,7 @@ impl Default for Pages {
             find: TableView::new(None),
             properties: TableView::new(None),
             stack: TableView::new(None),
+            tools: TableView::new(None),
             properties_state: None,
             tab_titles: Rc::new(VecModel::from(
                 Tab::ALL.iter().map(|tab| SharedString::from(tab.title())).collect::<Vec<_>>(),
@@ -76,6 +85,9 @@ impl Default for Pages {
             services_data: Vec::new(),
             network_loading: false,
             find_cancel: None,
+            tools_cancel: None,
+            tools_run: None,
+            tools_probes: Vec::new(),
         }
     }
 }
@@ -93,12 +105,17 @@ impl Pages {
         ui.set_properties_rows(self.properties.rows_model());
         ui.set_stack_columns(self.stack.columns_model());
         ui.set_stack_rows(self.stack.rows_model());
+        ui.set_tools_columns(self.tools.columns_model());
+        ui.set_tools_rows(self.tools.rows_model());
         ui.set_properties_tabs(ModelRc::from(Rc::clone(&self.tab_titles)));
         ui.set_properties_actions(ModelRc::from(Rc::clone(&self.actions)));
         self.services.empty_text = "Loading services…".into();
         self.network.empty_text = "Loading connections…".into();
         self.find.empty_text = "Type part of a name and press Search. Every process is searched for windows, loaded DLLs and named handles (files, registry keys, mutexes, sections…). Run as administrator to include other users' and system processes. Or press Pick a window and click any window to find its process.".into();
-        for id in [TableId::Services, TableId::Network, TableId::Find, TableId::Properties, TableId::Stack] {
+        self.tools.empty_text = "Type an IP address or host name, then Ping (four echoes, a second apart) or Trace route (each router on the way, up to 30). Only that address is contacted; a host name is looked up through Windows first.".into();
+        for id in
+            [TableId::Services, TableId::Network, TableId::Find, TableId::Properties, TableId::Stack, TableId::Tools]
+        {
             self.push(ui, id);
         }
     }
@@ -110,6 +127,7 @@ impl Pages {
             TableId::Find => &mut self.find,
             TableId::Properties => &mut self.properties,
             TableId::Stack => &mut self.stack,
+            TableId::Tools => &mut self.tools,
         }
     }
 
@@ -122,6 +140,7 @@ impl Pages {
             TableId::Find => ui.set_find_meta(meta),
             TableId::Properties => ui.set_properties_meta(meta),
             TableId::Stack => ui.set_stack_meta(meta),
+            TableId::Tools => ui.set_tools_meta(meta),
         }
     }
 }
@@ -149,6 +168,17 @@ pub fn connect(ui: &MainWindow, app: &Rc<RefCell<App>>) {
     ui.on_find_cancel(move || cancel(()));
     let pick = handler(ui, app, |app, ui, ()| app.start_window_pick(ui));
     ui.on_pick_window(move || pick(()));
+    let start = handler(ui, app, |app, ui, (tool, target): (i32, SharedString)| {
+        let tool = if tool == 1 { Tool::TraceRoute } else { Tool::Ping };
+        app.start_tool(ui, tool, target.to_string());
+    });
+    ui.on_tools_start(move |tool, target| start((tool, target)));
+    let cancel = handler(ui, app, |app, _ui, ()| {
+        if let Some(cancel) = &app.pages.tools_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    });
+    ui.on_tools_cancel(move || cancel(()));
 }
 
 impl App {
@@ -216,6 +246,18 @@ impl App {
                     0 => self.service_command(ui, name, ServiceCommand::Start),
                     1 => self.confirm_service(ui, name, ServiceCommand::Stop),
                     _ => self.confirm_service(ui, name, ServiceCommand::Restart),
+                }
+            }
+            // Ping or trace the selected connection's remote address.
+            (TableId::Network, 1 | 2) => {
+                let tool = if action == 1 { Tool::Ping } else { Tool::TraceRoute };
+                let remote = self.pages.network.selected_row().map(|row| row.cells[5].text.clone()).unwrap_or_default();
+                if remote.is_empty() {
+                    ui.set_tools_target(SharedString::new());
+                    self.switch_page(ui, TOOLS_PAGE);
+                    self.show_message(ui, "That endpoint has no remote address".into());
+                } else {
+                    self.start_tool(ui, tool, remote);
                 }
             }
             (TableId::Services | TableId::Network | TableId::Find, _) => {
@@ -548,6 +590,66 @@ impl App {
             }
             app.pages.push(ui, TableId::Network);
         });
+    }
+
+    // ----- Ping and trace route -----
+
+    fn start_tool(&mut self, ui: &MainWindow, tool: Tool, target: String) {
+        if self.pages.tools_cancel.is_some() {
+            return;
+        }
+        if self.page != TOOLS_PAGE {
+            self.switch_page(ui, TOOLS_PAGE);
+        }
+        ui.set_tools_target(target.as_str().into());
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.pages.tools_cancel = Some(Arc::clone(&cancel));
+        self.pages.tools_run = None;
+        self.pages.tools_probes.clear();
+        ui.set_tools_running(true);
+        self.pages.tools.clear(&format!("{}: looking up {}…", tool.title(), target.trim()));
+        self.pages.tools.status = format!("{}…", tool.title());
+        self.pages.push(ui, TableId::Tools);
+        background(
+            move || {
+                // The lookup can take a moment, so it happens here rather than on the UI thread.
+                let address = nettools::resolve(&target)?;
+                nettools::run(tool, address, |probe| {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        crate::with_app(|app, ui| app.tool_probe(ui, tool, address, probe));
+                    });
+                    !cancel.load(Ordering::Relaxed)
+                })?;
+                Ok(address)
+            },
+            move |app, ui, result: Result<IpAddr, String>| {
+                let cancelled = app.pages.tools_cancel.take().is_some_and(|c| c.load(Ordering::Relaxed));
+                ui.set_tools_running(false);
+                app.pages.tools.status = match result {
+                    Ok(address) => {
+                        let summary = nettools::summary(tool, address, &app.pages.tools_probes);
+                        if cancelled { format!("{summary} (cancelled)") } else { summary }
+                    }
+                    Err(error) => {
+                        app.pages.tools.clear(&error);
+                        String::new()
+                    }
+                };
+                app.pages.push(ui, TableId::Tools);
+            },
+        );
+    }
+
+    /// One probe's result, as it arrives.
+    fn tool_probe(&mut self, ui: &MainWindow, tool: Tool, address: IpAddr, probe: Probe) {
+        if self.pages.tools_run != Some((tool, address)) {
+            self.pages.tools_run = Some((tool, address));
+            self.pages.tools_probes.clear();
+        }
+        self.pages.tools_probes.push(probe);
+        self.pages.tools.set_table(nettools::table(tool, &self.pages.tools_probes));
+        self.pages.tools.status = format!("{} {address}…", tool.title());
+        self.pages.push(ui, TableId::Tools);
     }
 
     // ----- Pick a window -----

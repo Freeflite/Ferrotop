@@ -14,6 +14,7 @@ pub mod history;
 pub mod json;
 pub mod lhm;
 pub mod names;
+pub mod nettools;
 pub mod network;
 pub mod perf;
 pub mod properties;

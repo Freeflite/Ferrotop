@@ -34,6 +34,7 @@ const MESSAGE_REFRESHES: u8 = 6;
 /// UI page numbers past the four tabs.
 const PROPERTIES_PAGE: i32 = 4;
 const FIND_PAGE: i32 = 5;
+const TOOLS_PAGE: i32 = 6;
 
 /// Sort columns in the order the UI numbers them (0 = unsorted).
 const UI_COLUMNS: [SortColumn; 15] = [

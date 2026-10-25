@@ -10,7 +10,7 @@ import { DataTable, TableColumn, TablePanel, TableRowData } from "table.slint";
 export { Theme, ProcessRow, ProcessAction, CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, Stat, TableColumn, TableRowData }
 
 // The generic tables, and what happened to one of them.
-export enum TableId { services, network, find, properties, stack }
+export enum TableId { services, network, find, properties, stack, tools }
 export enum TableEvent { sort, click, activate, move, action }
 
 // Everything about a table except its columns and rows (which are models set once from Rust).
@@ -28,7 +28,8 @@ export struct AffinityCpu {
     checked: bool,
 }
 
-// Pages: 0 Processes, 1 Performance, 2 Services, 3 Network, 4 process properties, 5 Find.
+// Pages: 0 Processes, 1 Performance, 2 Services, 3 Network, 4 process properties, 5 Find,
+// 6 Ping and trace route.
 export component MainWindow inherits Window {
     title: "Ferrotop";
     icon: @image-url("../assets/ferrotop-256.png");
@@ -132,6 +133,9 @@ export component MainWindow inherits Window {
     in property <[TableColumn]> stack-columns;
     in property <[TableRowData]> stack-rows;
     in property <TableMeta> stack-meta;
+    in property <[TableColumn]> tools-columns;
+    in property <[TableRowData]> tools-rows;
+    in property <TableMeta> tools-meta;
 
     // Process properties page.
     in property <image> properties-icon;
@@ -141,8 +145,12 @@ export component MainWindow inherits Window {
     in property <int> properties-tab;
     in property <[string]> properties-actions;
 
-    // Find handles or DLLs page.
+    // Find handles, DLLs or windows page.
     in property <bool> find-running;
+
+    // Ping and trace route page.
+    in property <bool> tools-running;
+    in-out property <string> tools-target;
 
     // Dialogs.
     in-out property <bool> confirm-open;
@@ -191,6 +199,9 @@ export component MainWindow inherits Window {
     callback find-cancel();
     // Waits for a click on any window, then shows its process.
     callback pick-window();
+    // Runs a network tool (0 ping, 1 trace route) against an address or host name.
+    callback tools-start(int, string);
+    callback tools-cancel();
     callback run-task(string, bool);
     callback affinity-toggled(int, bool);
     callback affinity-all(bool);
@@ -211,6 +222,8 @@ export component MainWindow inherits Window {
             properties.focus-table();
         } else if (page == 5) {
             find.focus-table();
+        } else if (page == 6) {
+            tools-address.focus();
         }
         root.page-shown(page);
     }
@@ -224,6 +237,8 @@ export component MainWindow inherits Window {
             find.focus-table();
         } else if (table == TableId.properties) {
             properties.focus-table();
+        } else if (table == TableId.tools) {
+            tools.focus-table();
         }
     }
 
@@ -311,9 +326,11 @@ export component MainWindow inherits Window {
                 root.properties-tab-chosen(mod(root.properties-tab + root.properties-tabs.length - 1, root.properties-tabs.length));
                 return accept;
             }
-            if ((root.page == 4 || root.page == 5) && event.text == Key.Escape) {
+            if ((root.page == 4 || root.page == 5 || root.page == 6) && event.text == Key.Escape) {
                 if (root.page == 4) {
                     root.properties-back();
+                } else if (root.page == 6) {
+                    root.show-page(3);
                 } else {
                     root.show-page(0);
                 }
@@ -383,7 +400,7 @@ export component MainWindow inherits Window {
 
                     Tab {
                         text: "Network";
-                        active: root.page == 3;
+                        active: root.page == 3 || root.page == 6;
                         clicked => {
                             root.show-page(3);
                         }
@@ -898,7 +915,7 @@ export component MainWindow inherits Window {
                     status: root.network-meta.status;
                     empty-text: root.network-meta.empty-text;
                     filter-placeholder: "Filter connections";
-                    actions: ["Go to process"];
+                    actions: ["Go to process", "Ping", "Trace route"];
                     filter-changed(text) => {
                         root.table-filter(TableId.network, text);
                     }
@@ -1135,6 +1152,121 @@ export component MainWindow inherits Window {
                             }
                             action(index) => {
                                 root.table-event(TableId.find, TableEvent.action, index);
+                            }
+                        }
+                    }
+                }
+
+                // Ping and trace route.
+                Rectangle {
+                    visible: root.page == 6;
+                    width: parent.width;
+                    height: parent.height;
+
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        Rectangle {
+                            background: Theme.panel;
+                            height: 50px;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 10px;
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: "‹ Back";
+                                        clicked => {
+                                            root.show-page(3);
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: "Ping and trace route";
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    tools-address := LineEdit {
+                                        width: 320px;
+                                        placeholder-text: "IP address or host name";
+                                        text <=> root.tools-target;
+                                        accepted(text) => {
+                                            root.tools-start(0, text);
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: root.tools-running ? "Cancel" : "Ping";
+                                        primary: !root.tools-running;
+                                        clicked => {
+                                            if (root.tools-running) {
+                                                root.tools-cancel();
+                                            } else {
+                                                root.tools-start(0, tools-address.text);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: "Trace route";
+                                        enabled: !root.tools-running;
+                                        clicked => {
+                                            root.tools-start(1, tools-address.text);
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+
+                        tools := TablePanel {
+                            vertical-stretch: 1;
+                            columns: root.tools-columns;
+                            rows: root.tools-rows;
+                            content-width: root.tools-meta.content-width;
+                            sort-column: root.tools-meta.sort-column;
+                            sort-ascending: root.tools-meta.sort-ascending;
+                            selected-index: root.tools-meta.selected-index;
+                            status: root.tools-meta.status;
+                            empty-text: root.tools-meta.empty-text;
+                            filter-placeholder: "Filter results";
+                            actions: [];
+                            filter-changed(text) => {
+                                root.table-filter(TableId.tools, text);
+                            }
+                            sort-by(column) => {
+                                root.table-event(TableId.tools, TableEvent.sort, column);
+                            }
+                            row-clicked(index) => {
+                                root.table-event(TableId.tools, TableEvent.click, index);
+                            }
+                            row-activated(index) => {
+                                root.table-event(TableId.tools, TableEvent.activate, index);
+                            }
+                            move-selection(step) => {
+                                root.table-event(TableId.tools, TableEvent.move, step);
                             }
                         }
                     }
@@ -1880,6 +2012,14 @@ export component MainWindow inherits Window {
 
                 HorizontalLayout {
                     spacing: 6px;
+
+                    Button {
+                        text: "Ping…";
+                        clicked => {
+                            view-menu.close();
+                            root.show-page(6);
+                        }
+                    }
 
                     Button {
                         text: "Run…";
