@@ -299,7 +299,6 @@ mod tests {
             services: Arc::default(),
             exited_cycles: HashMap::new(),
             files: Vec::new(),
-            perf: crate::perf::PerfSample::default(),
             taken_at: Instant::now(),
         });
         provider

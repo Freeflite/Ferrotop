@@ -13,7 +13,7 @@ use ferrotop_sys::system::{CpuTimes, CycleTimes, MemoryStatus};
 use crate::delta::Delta;
 use crate::details::{DetailsCollector, FileFacts, ProcessDetails, file_key};
 use crate::history::History;
-use crate::perf::{PerfCollector, PerfSample, ProcessGpu};
+use crate::perf::ProcessGpu;
 
 /// How many refreshes a new or exited process stays highlighted.
 const HIGHLIGHT_REFRESHES: u8 = 2;
@@ -121,15 +121,12 @@ pub struct Sample {
     pub exited_cycles: HashMap<ProcessKey, u64>,
     /// Image-file facts found since the previous sample, keyed by [`file_key`].
     pub files: Vec<(String, Arc<FileFacts>)>,
-    /// Disk, network, GPU and memory figures for the Performance view.
-    pub perf: PerfSample,
     pub taken_at: Instant,
 }
 
 impl Sample {
-    /// Captures the OS state, filling in per-process details from `collector` and Performance
-    /// view figures from `perf`.
-    pub fn capture(collector: &mut DetailsCollector, perf: &mut PerfCollector) -> ferrotop_sys::Result<Self> {
+    /// Captures the OS state, filling in per-process details from `collector`.
+    pub fn capture(collector: &mut DetailsCollector) -> ferrotop_sys::Result<Self> {
         let cpus = ferrotop_sys::system::processor_times()?;
         let cycles = ferrotop_sys::system::cycle_times().ok();
         let processes = ferrotop_sys::process::enumerate()?;
@@ -139,8 +136,7 @@ impl Sample {
         let services = collector.services();
         let exited_cycles = collector.take_exited_cycles();
         let files = collector.take_new_files();
-        let perf = perf.collect();
-        Ok(Self { processes, cpus, cycles, memory, details, services, exited_cycles, files, perf, taken_at })
+        Ok(Self { processes, cpus, cycles, memory, details, services, exited_cycles, files, taken_at })
     }
 }
 
@@ -178,6 +174,8 @@ pub struct ProcessProvider {
     cpu_history: History,
     memory_history: History,
     files: HashMap<String, Arc<FileFacts>>,
+    /// Per-process GPU use by PID, from the latest Performance sample.
+    gpu: HashMap<u32, ProcessGpu>,
 }
 
 impl Default for ProcessProvider {
@@ -215,7 +213,14 @@ impl ProcessProvider {
             cpu_history: History::new(HISTORY_SAMPLES),
             memory_history: History::new(HISTORY_SAMPLES),
             files: HashMap::new(),
+            gpu: HashMap::new(),
         }
+    }
+
+    /// Per-process GPU use by PID (from a Performance sample, which arrives separately), shown
+    /// from the next [`update`](Self::update).
+    pub fn set_gpu_usage(&mut self, gpu: HashMap<u32, ProcessGpu>) {
+        self.gpu = gpu;
     }
 
     pub fn items(&self) -> impl Iterator<Item = &ProcessItem> {
@@ -404,7 +409,7 @@ impl ProcessProvider {
             }
             item.suspended = info.suspended;
             item.services = sample.services.get(&info.pid).cloned().unwrap_or_default();
-            item.gpu = sample.perf.gpu_processes.get(&info.pid).cloned().unwrap_or_default();
+            item.gpu = self.gpu.get(&info.pid).cloned().unwrap_or_default();
         }
 
         // Anything we didn't see this time has exited.
@@ -485,7 +490,6 @@ mod tests {
             services: Arc::default(),
             exited_cycles: HashMap::new(),
             files: Vec::new(),
-            perf: PerfSample::default(),
             taken_at: start + Duration::from_secs(secs),
         }
     }

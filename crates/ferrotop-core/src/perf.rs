@@ -1,12 +1,14 @@
 //! Data for the Performance view: CPU, memory, disks, network adapters and GPUs.
 //!
-//! [`PerfCollector`] lives on the sampler thread (it owns the PDH query and GPU handles) and
+//! [`PerfCollector`] lives on its own sampler thread (it owns the PDH query and GPU handles) and
 //! produces [`PerfSample`]s; [`PerformanceProvider`] turns those into graph histories on the UI
 //! thread. GPU engine and memory figures come from the same performance counters Task Manager
 //! reads, which also give the per-process GPU columns.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use ferrotop_sys::amd::Adl;
@@ -35,6 +37,8 @@ const PAWNIO_RETRY: Duration = Duration::from_secs(30);
 const LHM_RETRY: Duration = Duration::from_secs(10);
 /// Consecutive failed PawnIO reads before the device is reopened.
 const PAWNIO_MAX_FAILURES: u32 = 10;
+/// How long to wait before looking up a disk again after it couldn't be read.
+const DISK_RETRY: Duration = Duration::from_secs(30);
 
 /// Where the CPU temperatures came from.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -125,6 +129,8 @@ pub struct ProcessGpu {
 
 #[derive(Debug, Clone, Default)]
 pub struct PerfSample {
+    /// When [`PerfCollector::collect`] took it.
+    pub taken_at: Option<Instant>,
     pub machine: Arc<Machine>,
     pub cpu_speed_mhz: Option<f64>,
     pub memory: Option<MemoryCounters>,
@@ -153,9 +159,34 @@ struct Counters {
     gpu_adapter_shared: Option<CounterId>,
 }
 
-/// Owns the performance-counter query and GPU handles; lives on the sampler thread.
+/// The slow sources [`PerfCollector`] sets up after its first sample, in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Setup {
+    /// Performance counters for disks and GPUs. PDH can take seconds to load its providers.
+    Counters,
+    /// The GPU vendors' driver libraries (AMD ADL, NVIDIA NVML): hotspot, fan, power and clocks.
+    VendorLibraries,
+    Done,
+}
+
+/// A disk's model, type and size. Each is looked up on a thread of its own, because opening a
+/// disk that has spun down (a sleeping USB drive) waits for it to spin up.
+#[derive(Debug)]
+enum DiskLookup {
+    Pending,
+    Found(Arc<DiskInfo>),
+    /// Couldn't be read; try again after this.
+    Failed(Instant),
+}
+
+/// Owns the performance-counter query and GPU handles; lives on its own sampler thread.
+///
+/// Its first sample has only what's quick to read (the CPU, memory and network adapters). The
+/// slow sources come in one [`set_up_next`](Self::set_up_next) step at a time, and each disk
+/// once its lookup finishes, so every device shows as soon as its own data is ready.
 #[derive(Debug)]
 pub struct PerfCollector {
+    setup: Setup,
     query: Option<Query>,
     counters: Counters,
     adapters: Option<Adapters>,
@@ -163,7 +194,10 @@ pub struct PerfCollector {
     amd: Option<Adl>,
     nvidia: Option<Nvml>,
     machine: Arc<Machine>,
-    disks: HashMap<u32, Arc<DiskInfo>>,
+    disks: HashMap<u32, DiskLookup>,
+    /// Where disk lookups report: `(disk number, its details if they could be read)`.
+    disk_sender: Sender<(u32, Option<DiskInfo>)>,
+    disk_results: Receiver<(u32, Option<DiskInfo>)>,
     thermal: Option<CpuThermal>,
     pawnio: PawnIoState,
     /// When to try PawnIO again; `None` once it's known not to support this CPU.
@@ -180,6 +214,8 @@ impl Default for PerfCollector {
 }
 
 impl PerfCollector {
+    /// Reads the machine's fixed facts, which is quick; the slow sources wait for
+    /// [`set_up_next`](Self::set_up_next).
     pub fn new() -> Self {
         let adapters = Adapters::open().ok();
         let machine = Machine {
@@ -188,35 +224,18 @@ impl PerfCollector {
             slots: hardware::memory_slots().unwrap_or_default(),
             gpus: adapters.as_ref().map(|a| a.infos().cloned().collect()).unwrap_or_default(),
         };
-        let mut query = Query::open().ok();
-        let mut add = |path: &str| query.as_mut().and_then(|q| q.add(path).ok());
-        let counters = Counters {
-            cpu_performance: add(r"\Processor Information(_Total)\% Processor Performance"),
-            disk_idle: add(r"\PhysicalDisk(*)\% Idle Time"),
-            disk_read: add(r"\PhysicalDisk(*)\Disk Read Bytes/sec"),
-            disk_write: add(r"\PhysicalDisk(*)\Disk Write Bytes/sec"),
-            disk_latency: add(r"\PhysicalDisk(*)\Avg. Disk sec/Transfer"),
-            gpu_engine: add(r"\GPU Engine(*)\Utilization Percentage"),
-            gpu_process_dedicated: add(r"\GPU Process Memory(*)\Dedicated Usage"),
-            gpu_process_shared: add(r"\GPU Process Memory(*)\Shared Usage"),
-            gpu_adapter_dedicated: add(r"\GPU Adapter Memory(*)\Dedicated Usage"),
-            gpu_adapter_shared: add(r"\GPU Adapter Memory(*)\Shared Usage"),
-        };
-        // Rate counters need a previous collection before they report anything.
-        if let Some(query) = query.as_mut() {
-            let _ = query.collect();
-        }
-        let has_gpu = |names: &[&str]| machine.gpus.iter().any(|gpu| names.iter().any(|n| gpu.name.contains(n)));
-        let amd = has_gpu(&["AMD", "Radeon"]).then(Adl::open).flatten();
-        let nvidia = has_gpu(&["NVIDIA", "GeForce", "Quadro", "RTX"]).then(Nvml::open).flatten();
+        let (disk_sender, disk_results) = mpsc::channel();
         Self {
-            query,
-            counters,
+            setup: Setup::Counters,
+            query: None,
+            counters: Counters::default(),
             adapters,
-            amd,
-            nvidia,
+            amd: None,
+            nvidia: None,
             machine: Arc::new(machine),
             disks: HashMap::new(),
+            disk_sender,
+            disk_results,
             thermal: None,
             pawnio: PawnIoState::NotInstalled,
             pawnio_retry: Some(Instant::now()),
@@ -229,6 +248,44 @@ impl PerfCollector {
     /// The port LibreHardwareMonitor's web server listens on, if not the default.
     pub fn set_lhm_port(&mut self, port: u16) {
         self.lhm_port = port;
+    }
+
+    /// Sets up the next slow source, if any is left, and returns whether it did. Run it between
+    /// samples, so what's already working keeps showing while it waits.
+    pub fn set_up_next(&mut self) -> bool {
+        match self.setup {
+            Setup::Counters => {
+                let mut query = Query::open().ok();
+                let mut add = |path: &str| query.as_mut().and_then(|q| q.add(path).ok());
+                self.counters = Counters {
+                    cpu_performance: add(r"\Processor Information(_Total)\% Processor Performance"),
+                    disk_idle: add(r"\PhysicalDisk(*)\% Idle Time"),
+                    disk_read: add(r"\PhysicalDisk(*)\Disk Read Bytes/sec"),
+                    disk_write: add(r"\PhysicalDisk(*)\Disk Write Bytes/sec"),
+                    disk_latency: add(r"\PhysicalDisk(*)\Avg. Disk sec/Transfer"),
+                    gpu_engine: add(r"\GPU Engine(*)\Utilization Percentage"),
+                    gpu_process_dedicated: add(r"\GPU Process Memory(*)\Dedicated Usage"),
+                    gpu_process_shared: add(r"\GPU Process Memory(*)\Shared Usage"),
+                    gpu_adapter_dedicated: add(r"\GPU Adapter Memory(*)\Dedicated Usage"),
+                    gpu_adapter_shared: add(r"\GPU Adapter Memory(*)\Shared Usage"),
+                };
+                // Rate counters need a previous collection before they report anything.
+                if let Some(query) = query.as_mut() {
+                    let _ = query.collect();
+                }
+                self.query = query;
+                self.setup = Setup::VendorLibraries;
+            }
+            Setup::VendorLibraries => {
+                let gpus = &self.machine.gpus;
+                let has_gpu = |names: &[&str]| gpus.iter().any(|gpu| names.iter().any(|n| gpu.name.contains(n)));
+                self.amd = has_gpu(&["AMD", "Radeon"]).then(Adl::open).flatten();
+                self.nvidia = has_gpu(&["NVIDIA", "GeForce", "Quadro", "RTX"]).then(Nvml::open).flatten();
+                self.setup = Setup::Done;
+            }
+            Setup::Done => return false,
+        }
+        true
     }
 
     /// CPU temperatures from PawnIO if it's usable, else from LibreHardwareMonitor if it's running.
@@ -269,7 +326,9 @@ impl PerfCollector {
                 }
             }
         }
-        if now >= self.lhm_retry {
+        // When nothing listens on its port, finding that out takes a while (Windows retries the
+        // connection), so LibreHardwareMonitor waits until everything else is set up.
+        if self.setup == Setup::Done && now >= self.lhm_retry {
             match lhm::cpu_temps(self.lhm_port) {
                 Ok(Some(temps)) => return (Some(temps), CpuTempSource::LibreHardwareMonitor),
                 Ok(None) => {}
@@ -281,7 +340,16 @@ impl PerfCollector {
 
     pub fn collect(&mut self) -> PerfSample {
         let (cpu_temps, cpu_temp_source) = self.cpu_temperatures();
+        let now = Instant::now();
+        while let Ok((number, info)) = self.disk_results.try_recv() {
+            let lookup = match info {
+                Some(info) => DiskLookup::Found(Arc::new(info)),
+                None => DiskLookup::Failed(now + DISK_RETRY),
+            };
+            self.disks.insert(number, lookup);
+        }
         let mut sample = PerfSample {
+            taken_at: Some(now),
             cpu_temps,
             cpu_temp_source,
             pawnio: self.pawnio,
@@ -318,12 +386,15 @@ impl PerfCollector {
         let mut disks: Vec<_> = by_disk(self.counters.disk_idle).into_iter().collect();
         disks.sort_by_key(|(number, _)| *number);
         for (number, (letters, idle)) in disks {
+            // A disk shows once its lookup is done.
             let info = match self.disks.get(&number) {
-                Some(info) => Arc::clone(info),
-                None => match disk_info(number) {
-                    Ok(info) => Arc::clone(self.disks.entry(number).or_insert_with(|| Arc::new(info))),
-                    Err(_) => continue,
-                },
+                Some(DiskLookup::Found(info)) => Arc::clone(info),
+                Some(DiskLookup::Pending) => continue,
+                Some(DiskLookup::Failed(retry)) if now < *retry => continue,
+                _ => {
+                    self.disks.insert(number, look_up_disk(number, &self.disk_sender));
+                    continue;
+                }
             };
             let value = |map: &HashMap<u32, (String, f64)>| map.get(&number).map_or(0.0, |(_, v)| *v);
             sample.disks.push(DiskSample {
@@ -360,6 +431,19 @@ impl PerfCollector {
                 .or_else(|| self.nvidia.as_ref().and_then(|nvidia| nvidia.sensors(location)));
         }
         sample
+    }
+}
+
+/// Starts looking up disk `number` on a thread of its own, which reports to `sender`.
+fn look_up_disk(number: u32, sender: &Sender<(u32, Option<DiskInfo>)>) -> DiskLookup {
+    let sender = sender.clone();
+    let spawned = thread::Builder::new().name(format!("ferrotop-disk-{number}")).spawn(move || {
+        // The collector may be gone by the time a slow disk answers.
+        let _ = sender.send((number, disk_info(number).ok()));
+    });
+    match spawned {
+        Ok(_) => DiskLookup::Pending,
+        Err(_) => DiskLookup::Failed(Instant::now() + DISK_RETRY),
     }
 }
 
@@ -631,8 +715,6 @@ impl PerformanceProvider {
         }
     }
 
-    /// Folds in a sample taken at `taken_at`; `cpu_usage` is the machine-wide CPU fraction from
-    /// the process provider (so both views agree).
     /// Per-processor busy fractions since the previous sample, then averaged into cores and L3
     /// groups using the CPU topology.
     fn update_processors(&mut self, cpus: &[CpuTimes]) {
@@ -692,12 +774,21 @@ impl PerformanceProvider {
         }
     }
 
-    pub fn update(&mut self, sample: &PerfSample, cpu_usage: f32, cpus: &[CpuTimes], taken_at: Instant) {
-        let elapsed = self.last.map(|last| taken_at.saturating_duration_since(last).as_secs_f64()).filter(|s| *s > 0.0);
-        self.last = Some(taken_at);
-        self.machine = Arc::clone(&sample.machine);
+    /// Folds in CPU use from a process sample: `cpu_usage` is the machine-wide CPU fraction from
+    /// the process provider (so both views agree), `cpus` each logical processor's times.
+    pub fn update_cpu(&mut self, cpu_usage: f32, cpus: &[CpuTimes]) {
         self.cpu.push(f64::from(cpu_usage));
         self.update_processors(cpus);
+    }
+
+    /// Folds in a sample from the [`PerfCollector`].
+    pub fn update_devices(&mut self, sample: &PerfSample) {
+        let elapsed = match (self.last, sample.taken_at) {
+            (Some(last), Some(now)) => Some(now.saturating_duration_since(last).as_secs_f64()).filter(|s| *s > 0.0),
+            _ => None,
+        };
+        self.last = sample.taken_at.or(self.last);
+        self.machine = Arc::clone(&sample.machine);
         self.cpu_speed_mhz = sample.cpu_speed_mhz;
         self.update_temperatures(sample);
         self.uptime = sample.uptime;
@@ -843,6 +934,24 @@ mod tests {
     }
 
     #[test]
+    fn the_first_sample_waits_for_no_slow_source() {
+        let mut perf = PerfCollector::new();
+        let first = perf.collect();
+        assert!(first.machine.cpu.logical > 0 && first.memory.is_some(), "{first:?}");
+        assert!(first.disks.is_empty() && first.gpus.is_empty(), "nothing from the counters yet");
+        // Counters, then vendor libraries, then nothing is left.
+        assert!(perf.set_up_next());
+        assert!(perf.set_up_next());
+        assert!(!perf.set_up_next());
+        // Disks show once their lookups finish.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while perf.collect().disks.is_empty() {
+            assert!(Instant::now() < deadline, "no disk showed up");
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    #[test]
     fn network_rates_are_bits_per_second() {
         let adapter = |sent, received| NetAdapter {
             index: 7,
@@ -857,13 +966,16 @@ mod tests {
         };
         let t0 = Instant::now();
         let mut provider = PerformanceProvider::new();
-        provider.update(&PerfSample { networks: vec![adapter(1000, 0)], ..PerfSample::default() }, 0.0, &[], t0);
-        provider.update(
-            &PerfSample { networks: vec![adapter(3000, 500)], ..PerfSample::default() },
-            0.0,
-            &[],
-            t0 + Duration::from_secs(2),
-        );
+        provider.update_devices(&PerfSample {
+            taken_at: Some(t0),
+            networks: vec![adapter(1000, 0)],
+            ..PerfSample::default()
+        });
+        provider.update_devices(&PerfSample {
+            taken_at: Some(t0 + Duration::from_secs(2)),
+            networks: vec![adapter(3000, 500)],
+            ..PerfSample::default()
+        });
         let view = &provider.networks[&7];
         assert_eq!(view.send_rate, 8000.0);
         assert_eq!(view.receive_rate, 2000.0);
@@ -881,12 +993,12 @@ mod tests {
         };
         let sample = PerfSample { machine: Arc::new(machine), ..PerfSample::default() };
         let cpu = |idle, user| CpuTimes { idle, user, ..CpuTimes::default() };
-        let t0 = Instant::now();
         let mut provider = PerformanceProvider::new();
-        provider.update(&sample, 0.0, &[cpu(0, 0); 4], t0);
+        provider.update_devices(&sample);
+        provider.update_cpu(0.0, &[cpu(0, 0); 4]);
         // Over the next interval: CPU 0 fully busy, CPU 1 idle, CPU 2 half busy, CPU 3 idle.
         let next = [cpu(0, 100), cpu(100, 0), cpu(50, 50), cpu(100, 0)];
-        provider.update(&sample, 0.0, &next, t0 + Duration::from_secs(1));
+        provider.update_cpu(0.0, &next);
         let latest = |histories: &[History]| histories.iter().map(|h| h.latest().unwrap()).collect::<Vec<_>>();
         assert_eq!(latest(&provider.logical), [1.0, 0.0, 0.5, 0.0]);
         assert_eq!(latest(&provider.cores), [0.5, 0.25]);

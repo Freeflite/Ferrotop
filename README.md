@@ -96,8 +96,10 @@ driver. Ferrotop ships no driver, but uses one of these if it's there:
   users.
 - Settings (theme, columns, sort, tree view, page, hidden graphs, window size) are saved to
   `%APPDATA%\Ferrotop\settings.ini`; dump files go to `%LOCALAPPDATA%\Ferrotop\Dumps`.
-- The OS is sampled on a background thread, and slow queries (handles, services, stacks,
-  searches) run on worker threads, so the window never waits on them.
+- The OS is sampled on background threads: processes on one, the Performance view's devices on
+  another (each disk's details on its own), so a slow device holds up only itself and each shows
+  as soon as it can be read. Slow queries (handles, services, stacks, searches) run on worker
+  threads too, so the window never waits on them.
 
 ### Keyboard
 

@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ferrotop_core::details::{Account, file_key};
 use ferrotop_core::format;
-use ferrotop_core::perf::PerformanceProvider;
+use ferrotop_core::perf::{PerfSample, PerformanceProvider};
 use ferrotop_core::provider::{ProcessItem, ProcessKey, ProcessProvider, ProcessState, Sample, is_pseudo_process};
 use ferrotop_core::sampler::Sampler;
 use ferrotop_core::settings::{CpuGraph, Page, Settings, ThemeMode};
@@ -131,9 +131,9 @@ impl App {
             Ok(sample) => sample,
             Err(error) => return self.show_message(ui, format!("Refresh failed: {error}")),
         };
-        let (perf, cpus, taken_at) = (sample.perf.clone(), sample.cpus.clone(), sample.taken_at);
+        let cpus = sample.cpus.clone();
         self.provider.update(sample);
-        self.perf.update(&perf, self.provider.stats().cpu_usage, &cpus, taken_at);
+        self.perf.update_cpu(self.provider.stats().cpu_usage, &cpus);
         self.convert_icons();
         if self.selected.is_some_and(|key| self.provider.get(&key).is_none()) {
             self.selected = None;
@@ -152,6 +152,15 @@ impl App {
             self.update_performance(ui);
         }
         self.refresh_pages(ui);
+    }
+
+    /// Folds in Performance view figures, which arrive from their own sampler thread.
+    fn apply_perf(&mut self, ui: &MainWindow, mut perf: PerfSample) {
+        self.provider.set_gpu_usage(std::mem::take(&mut perf.gpu_processes));
+        self.perf.update_devices(&perf);
+        if self.page == 1 {
+            self.update_performance(ui);
+        }
     }
 
     /// Turns newly checked image files' icon pixels into UI images, once per file.
@@ -192,19 +201,19 @@ impl App {
     fn update_performance(&mut self, ui: &MainWindow) {
         let stats = *self.provider.stats();
         let devices = performance::devices(&self.perf);
-        if !devices.contains(&self.device) {
-            self.device = Device::Cpu;
-        }
+        // The chosen device may not be there yet (disks and GPUs show once they can be read) or
+        // any more (an unplugged disk): show the CPU meanwhile, but keep the choice.
+        let device = if devices.contains(&self.device) { self.device } else { Device::Cpu };
         let tiles = devices.iter().map(|&device| performance::tile(&self.perf, &stats, device)).collect();
         sync_model(&self.perf_models.devices, tiles);
-        ui.set_selected_device(devices.iter().position(|d| *d == self.device).unwrap_or(0) as i32);
+        ui.set_selected_device(devices.iter().position(|d| *d == device).unwrap_or(0) as i32);
 
         let detail =
-            performance::detail(&self.perf, &stats, self.device, self.settings.cpu_graph, &self.settings.hidden_graphs);
+            performance::detail(&self.perf, &stats, device, self.settings.cpu_graph, &self.settings.hidden_graphs);
         ui.set_device_title(detail.title.into());
         ui.set_device_model(detail.model.into());
         let utilization_shown = detail.toggles.iter().any(|t| t.id == "cpu.utilization" && t.shown);
-        ui.set_show_cpu_graphs(self.device == Device::Cpu && utilization_shown);
+        ui.set_show_cpu_graphs(device == Device::Cpu && utilization_shown);
         ui.set_cpu_graph(CpuGraph::ALL.iter().position(|g| *g == self.settings.cpu_graph).unwrap_or(0) as i32);
         ui.set_cells_title(detail.cells_title.into());
         ui.set_cell_columns(detail.cell_columns);
@@ -748,9 +757,14 @@ fn seconds_since_filetime(filetime: i64) -> u64 {
     u64::try_from((now + UNIX_EPOCH_AS_FILETIME - filetime) / 10_000_000).unwrap_or(0)
 }
 
-/// Runs on the UI thread with a sample posted by the sampler thread.
+/// Runs on the UI thread with a sample posted by the process sampler thread.
 fn deliver(sample: ferrotop_sys::Result<Sample>) {
     with_app(|app, ui| app.apply_sample(ui, sample));
+}
+
+/// Runs on the UI thread with a sample posted by the Performance sampler thread.
+fn deliver_perf(perf: PerfSample) {
+    with_app(|app, ui| app.apply_perf(ui, perf));
 }
 
 /// Wraps an `App` method as a Slint callback that holds only weak references to the window.
@@ -813,10 +827,17 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     APP.with(|cell| *cell.borrow_mut() = Some(Rc::clone(&app)));
 
-    let sampler = Sampler::spawn(REFRESH_INTERVAL, lhm_port, |sample| {
-        // On the sampler thread: hand the sample to the UI thread.
-        let _ = slint::invoke_from_event_loop(move || deliver(sample));
-    })
+    let sampler = Sampler::spawn(
+        REFRESH_INTERVAL,
+        lhm_port,
+        // On the sampler threads: hand each sample to the UI thread.
+        |sample| {
+            let _ = slint::invoke_from_event_loop(move || deliver(sample));
+        },
+        |perf| {
+            let _ = slint::invoke_from_event_loop(move || deliver_perf(perf));
+        },
+    )
     .map_err(|error| slint::PlatformError::Other(format!("couldn't start the sampler thread: {error}")))?;
     app.borrow_mut().sampler = Some(sampler);
 
