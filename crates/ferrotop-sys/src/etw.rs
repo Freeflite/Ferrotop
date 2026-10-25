@@ -333,8 +333,11 @@ mod tests {
             for _ in 0..50 {
                 sender.send_to(&[0u8; 1000], target).expect("send");
             }
-            std::fs::write(&path, vec![1u8; 1 << 20]).expect("write");
-            std::fs::File::open(&path).and_then(|file| file.sync_all()).expect("flush");
+            // Written and flushed through one handle: flushing needs write access.
+            let mut file = std::fs::File::create(&path).expect("create");
+            std::io::Write::write_all(&mut file, &vec![1u8; 1 << 20]).expect("write");
+            file.sync_all().expect("flush");
+            drop(file);
             thread::sleep(std::time::Duration::from_millis(250));
             let totals = trace.drain();
             seen.network_by_process.extend(totals.network_by_process);
