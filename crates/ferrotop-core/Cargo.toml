@@ -1,0 +1,18 @@
+[package]
+name = "ferrotop-core"
+description = "Process provider, CPU accounting and process-tree logic for Ferrotop. Contains no unsafe code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Exposes the parsers to the cargo-fuzz harness in `fuzz/`. Never enabled in normal builds.
+fuzzing = ["ferrotop-sys/fuzzing"]
+
+[dependencies]
+ferrotop-sys.workspace = true
+
+[lints]
+workspace = true

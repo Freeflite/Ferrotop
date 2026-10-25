@@ -1,0 +1,24 @@
+# Hardening and packaging flags for Windows builds (scripts/build-release.ps1 repeats them, since
+# RUSTFLAGS replaces this list):
+# - static C runtime: ferrotop.exe needs no Visual C++ Redistributable and runs as a single file;
+# - Control Flow Guard: indirect calls are checked against valid targets;
+# - DEPENDENTLOADFLAG 0x800: the exe's own DLL imports resolve from System32 only, so a DLL
+#   planted next to a downloaded ferrotop.exe is never loaded;
+# - CETCOMPAT (x64): opts into hardware shadow stacks where the CPU supports them;
+# - Brepro: no link timestamp, so the same sources and toolchain give the same bytes.
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "control-flow-guard",
+    "-C", "link-arg=/DEPENDENTLOADFLAG:0x800",
+    "-C", "link-arg=/CETCOMPAT",
+    "-C", "link-arg=/Brepro",
+]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "control-flow-guard",
+    "-C", "link-arg=/DEPENDENTLOADFLAG:0x800",
+    "-C", "link-arg=/Brepro",
+]

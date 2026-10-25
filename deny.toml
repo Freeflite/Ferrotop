@@ -1,0 +1,97 @@
+# cargo-deny policy: run `cargo deny check` (CI does, on every push).
+#
+# Ferrotop only builds for Windows, so only Windows dependencies are checked.
+
+[graph]
+targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+all-features = false
+
+[advisories]
+# Any RustSec advisory (vulnerability, unsound code, unmaintained or yanked crate) fails the
+# check until it's been looked at; deliberate exceptions go in `ignore` with a reason.
+version = 2
+yanked = "deny"
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses only, so the MIT-licensed exe stays freely redistributable.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "0BSD",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+# The allowlist covers licenses Ferrotop may pick up later too; unused entries aren't a problem.
+unused-allowed-license = "allow"
+
+# Slint is GPL-3.0 or its royalty-free license; Ferrotop uses it under the Royalty-free License
+# 2.0 for desktop applications, whose attribution requirement the About box meets.
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "slint"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "slint-build"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "slint-macros"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-backend-selector"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-backend-winit"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-common"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-compiler"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-core"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-core-macros"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-renderer-software"
+
+[bans]
+# Duplicate versions cost build time and binary size but aren't a security problem.
+multiple-versions = "warn"
+wildcards = "deny"
+# The workspace crates depend on each other by path; none of them is published.
+allow-wildcard-paths = true
+# OpenSSL and friends would be a large native attack surface Ferrotop has no use for.
+deny = [
+    { crate = "openssl" },
+    { crate = "openssl-sys" },
+]
+
+[sources]
+# Only crates.io; no git dependencies or alternate registries.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

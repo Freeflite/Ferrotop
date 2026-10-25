@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = ["crates/ferrotop-sys", "crates/ferrotop-core", "crates/ferrotop"]
+# The cargo-fuzz harness is its own workspace (it needs nightly and libFuzzer).
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.5.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/Freeflite/Ferrotop"
+
+[workspace.dependencies]
+ferrotop-sys = { path = "crates/ferrotop-sys" }
+ferrotop-core = { path = "crates/ferrotop-core" }
+windows-sys = "0.61.2"
+slint = { version = "1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility", "raw-window-handle-06"] }
+slint-build = "1.18.1"
+raw-window-handle = "0.6.2"
+embed-resource = "3.0.12"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,40 @@
+# Fuzz targets for Ferrotop's parsers (run with cargo-fuzz on a nightly toolchain):
+#   cargo +nightly fuzz run sys_buffers -- -max_total_time=60
+# A separate workspace, so the fuzzing feature and libFuzzer never touch normal builds.
+[package]
+name = "ferrotop-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+ferrotop-sys = { path = "../crates/ferrotop-sys", features = ["fuzzing"] }
+ferrotop-core = { path = "../crates/ferrotop-core", features = ["fuzzing"] }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "sys_buffers"
+path = "fuzz_targets/sys_buffers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lhm_response"
+path = "fuzz_targets/lhm_response.rs"
+test = false
+doc = false
+bench = false

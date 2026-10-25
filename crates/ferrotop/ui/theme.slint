@@ -1,0 +1,52 @@
+// Colors and metrics shared by every view. Exported to Rust (via main.slint) so `dark` can be set
+// directly and the native title bar can use the same colors.
+export global Theme {
+    in-out property <bool> dark;
+    out property <color> background: dark ? #14161b : #ffffff;
+    out property <color> panel: dark ? #1b1e25 : #f3f4f6;
+    out property <color> panel-raised: dark ? #222630 : #ffffff;
+    out property <color> border: dark ? #2c313c : #d8dbe0;
+    out property <color> grid: dark ? #ffffff0e : #0000000f;
+    out property <color> text: dark ? #e4e6eb : #1c2026;
+    out property <color> muted: dark ? #8a919e : #5c6470;
+    out property <color> accent: dark ? #e8743b : #c2501b;
+    out property <color> accent-cool: dark ? #4fb3d9 : #1769c4;
+    out property <color> selection: dark ? #3d74d878 : #a8c8ff;
+    out property <color> hover: dark ? #ffffff0c : #0000000a;
+    // Row highlights, after System Informer's categories.
+    out property <color> new-process: dark ? #2f9e5a48 : #c4efcf;
+    out property <color> exited-process: dark ? #c241414c : #f8c4c4;
+    out property <color> own-process: dark ? #d9b84a26 : #fff4bd;
+    out property <color> service-process: dark ? #c35bb034 : #f6d8f1;
+    out property <color> system-process: dark ? #4f7fd930 : #d9e6ff;
+    out property <color> elevated-process: dark ? #e8743b33 : #ffdcbf;
+    // Performance view: one color per device kind, like Task Manager.
+    out property <color> cpu-color: dark ? #e8743b : #c2501b;
+    out property <color> memory-color: dark ? #b07ae0 : #8b3fc1;
+    out property <color> disk-color: dark ? #5cc46c : #2e8b3e;
+    out property <color> network-color: dark ? #e0a33a : #a86d00;
+    out property <color> gpu-color: dark ? #4fb3d9 : #1769c4;
+    // Table row tones: good (running, enabled), warning (RWX memory, suspended).
+    out property <color> good: dark ? #5cc46c : #2e7d3a;
+    out property <color> warning-row: dark ? #e0a33a2a : #fff1d2;
+    out property <length> row-height: 22px;
+
+    public pure function highlight-color(highlight: int) -> brush {
+        if (highlight == 1) { return new-process; }
+        if (highlight == 2) { return exited-process; }
+        if (highlight == 3) { return own-process; }
+        if (highlight == 4) { return service-process; }
+        if (highlight == 5) { return system-process; }
+        if (highlight == 6) { return elevated-process; }
+        return transparent;
+    }
+
+    // Kinds: 0 CPU, 1 memory, 2 disk, 3 network, 4 GPU.
+    public pure function device-color(kind: int) -> color {
+        if (kind == 1) { return memory-color; }
+        if (kind == 2) { return disk-color; }
+        if (kind == 3) { return network-color; }
+        if (kind == 4) { return gpu-color; }
+        return cpu-color;
+    }
+}

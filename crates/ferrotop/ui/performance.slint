@@ -1,0 +1,557 @@
+import { Button, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { MiniGraph } from "widgets.slint";
+
+// One entry in the device sidebar. Kinds: 0 CPU, 1 memory, 2 disk, 3 network, 4 GPU.
+export struct DeviceTile {
+    kind: int,
+    title: string,
+    subtitle: string,
+    value: string,
+    line: string,
+    fill: string,
+}
+
+// A graph in the detail pane. Paths are in a 100x100 box; `line-b` is an optional second series.
+export struct GraphData {
+    // Stable id for showing and hiding it from the View menu, e.g. `gpu.temperature`.
+    id: string,
+    kind: int,
+    title: string,
+    corner: string,
+    line-a: string,
+    fill-a: string,
+    line-b: string,
+}
+
+// A graph the View menu can show or hide for the selected device.
+export struct GraphToggle {
+    id: string,
+    title: string,
+    shown: bool,
+}
+
+// A labeled box around a run of cells in one row of the CPU grid (a CCD's CCXs).
+export struct CellGroup {
+    title: string,
+    column: int,
+    row: int,
+    columns: int,
+}
+
+// Two graphs side by side (the GPU engine grid).
+export struct GraphPair {
+    left: GraphData,
+    right: GraphData,
+    has-right: bool,
+}
+
+export struct Stat {
+    label: string,
+    value: string,
+}
+
+component PerfGraph inherits VerticalLayout {
+    in property <GraphData> data;
+    in property <bool> show-axis: true;
+
+    spacing: 2px;
+
+    HorizontalLayout {
+        Text {
+            text: root.data.title;
+            font-size: 11px;
+            color: Theme.muted;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        Text {
+            text: root.data.corner;
+            font-size: 11px;
+            color: Theme.muted;
+        }
+    }
+
+    Rectangle {
+        min-height: 40px;
+        vertical-stretch: 1;
+        background: Theme.panel-raised;
+        border-width: 1px;
+        border-color: Theme.device-color(root.data.kind).with-alpha(0.6);
+        clip: true;
+
+        for i in 9: Rectangle {
+            x: 0;
+            y: (i + 1) * parent.height / 10;
+            width: parent.width;
+            height: 1px;
+            background: Theme.grid;
+        }
+        for i in 11: Rectangle {
+            x: (i + 1) * parent.width / 12;
+            y: 0;
+            width: 1px;
+            height: parent.height;
+            background: Theme.grid;
+        }
+
+        MiniGraph {
+            width: parent.width;
+            height: parent.height;
+            line-commands: root.data.line-a;
+            fill-commands: root.data.fill-a;
+            tint: Theme.device-color(root.data.kind);
+        }
+
+        if root.data.line-b != "": Path {
+            width: parent.width;
+            height: parent.height;
+            viewbox-width: 100;
+            viewbox-height: 100;
+            fit: fill;
+            commands: root.data.line-b;
+            stroke: Theme.device-color(root.data.kind).darker(0.35);
+            stroke-width: 1px;
+        }
+    }
+
+    if root.show-axis: HorizontalLayout {
+        Text {
+            text: "60 seconds";
+            font-size: 10px;
+            color: Theme.muted;
+            horizontal-stretch: 1;
+        }
+
+        Text {
+            text: "0";
+            font-size: 10px;
+            color: Theme.muted;
+        }
+    }
+}
+
+// One small graph in a grid (per core, per thread, per CCX).
+component CellGraph inherits Rectangle {
+    in property <GraphData> data;
+
+    background: Theme.panel-raised;
+    border-width: 1px;
+    border-color: Theme.device-color(root.data.kind).with-alpha(0.5);
+    clip: true;
+
+    MiniGraph {
+        width: parent.width;
+        height: parent.height;
+        line-commands: root.data.line-a;
+        fill-commands: root.data.fill-a;
+        tint: Theme.device-color(root.data.kind);
+    }
+
+    Text {
+        x: 4px;
+        y: 2px;
+        text: root.data.title;
+        font-size: 9px;
+        color: Theme.muted;
+    }
+
+    Text {
+        x: parent.width - self.width - 4px;
+        y: 2px;
+        text: root.data.corner;
+        font-size: 9px;
+        color: Theme.text;
+    }
+}
+
+component DeviceTileView inherits Rectangle {
+    in property <DeviceTile> tile;
+    in property <bool> selected;
+    callback clicked;
+
+    height: 64px;
+    background: root.selected ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    if root.selected: Rectangle {
+        x: 0;
+        width: 3px;
+        height: parent.height;
+        background: Theme.device-color(root.tile.kind);
+    }
+
+    HorizontalLayout {
+        padding: 8px;
+        padding-left: 12px;
+        spacing: 10px;
+
+        Rectangle {
+            width: 72px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.device-color(root.tile.kind);
+
+            MiniGraph {
+                width: parent.width;
+                height: parent.height;
+                line-commands: root.tile.line;
+                fill-commands: root.tile.fill;
+                tint: Theme.device-color(root.tile.kind);
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+
+            Text {
+                text: root.tile.title;
+                font-size: 14px;
+                color: Theme.text;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.tile.subtitle;
+                font-size: 11px;
+                color: Theme.muted;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.tile.value;
+                font-size: 11px;
+                color: Theme.muted;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+component BigStat inherits VerticalLayout {
+    in property <Stat> stat;
+    // With every graph hidden the figures get the room, at a size readable from across the desk.
+    in property <bool> large;
+
+    spacing: 0px;
+
+    Text {
+        text: root.stat.label;
+        font-size: root.large ? 17px : 11px;
+        color: Theme.muted;
+    }
+
+    Text {
+        text: root.stat.value;
+        font-size: root.large ? 64px : 20px;
+        font-weight: root.large ? 300 : 400;
+        color: Theme.text;
+    }
+}
+
+// The Performance page: a device list on the left and the selected device's graphs and figures.
+export component PerformancePage inherits Rectangle {
+    in property <[DeviceTile]> devices;
+    in property <int> selected-device;
+    in property <string> title;
+    in property <string> model;
+    in property <[GraphData]> big-graphs;
+    in property <[GraphPair]> graph-pairs;
+    in property <[GraphData]> small-graphs;
+    in property <[Stat]> stats-top;
+    in property <[Stat]> stats-bottom;
+    in property <[Stat]> stats-sensors;
+    in property <[Stat]> info;
+    // CPU only: 0 overall, 1 per core, 2 per thread, 3 per CCX; and the grid for 1-3.
+    in property <bool> show-cpu-graphs;
+    in property <int> cpu-graph;
+    in property <[GraphData]> cells;
+    in property <[CellGroup]> cell-groups;
+    in property <int> cell-columns: 8;
+    in property <string> cells-title;
+    in property <bool> figures-only;
+    callback select-device(int);
+    callback show-page(int);
+    callback cpu-graph-chosen(int);
+
+    public function focus-list() {
+        keys.focus();
+    }
+
+    background: Theme.background;
+
+    HorizontalLayout {
+        Rectangle {
+            width: 250px;
+            background: Theme.panel;
+
+            keys := FocusScope {
+                key-pressed(event) => {
+                    if (event.modifiers.control && event.text == "1") {
+                        root.show-page(0);
+                        return accept;
+                    }
+                    if (event.text == Key.UpArrow) {
+                        root.select-device(max(0, root.selected-device - 1));
+                        return accept;
+                    }
+                    if (event.text == Key.DownArrow) {
+                        root.select-device(min(root.devices.length - 1, root.selected-device + 1));
+                        return accept;
+                    }
+                    reject
+                }
+
+                ListView {
+                    width: parent.width;
+                    height: parent.height;
+
+                    for tile[index] in root.devices: DeviceTileView {
+                        tile: tile;
+                        selected: index == root.selected-device;
+                        clicked => {
+                            keys.focus();
+                            root.select-device(index);
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                x: parent.width - 1px;
+                width: 1px;
+                height: parent.height;
+                background: Theme.border;
+            }
+        }
+
+        VerticalLayout {
+            padding: 18px;
+            padding-top: 12px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                spacing: 12px;
+
+                Text {
+                    text: root.title;
+                    font-size: 26px;
+                    color: Theme.text;
+                    vertical-alignment: bottom;
+                }
+
+                Text {
+                    text: root.model;
+                    font-size: 15px;
+                    color: Theme.text;
+                    horizontal-alignment: right;
+                    vertical-alignment: bottom;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+
+            if root.show-cpu-graphs: HorizontalLayout {
+                spacing: 6px;
+                alignment: end;
+
+                Text {
+                    text: "Graph:";
+                    font-size: 11px;
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                }
+
+                Button {
+                    text: "Overall";
+                    primary: root.cpu-graph == 0;
+                    clicked => {
+                        root.cpu-graph-chosen(0);
+                    }
+                }
+
+                Button {
+                    text: "Cores";
+                    primary: root.cpu-graph == 1;
+                    clicked => {
+                        root.cpu-graph-chosen(1);
+                    }
+                }
+
+                Button {
+                    text: "Threads";
+                    primary: root.cpu-graph == 2;
+                    clicked => {
+                        root.cpu-graph-chosen(2);
+                    }
+                }
+
+                Button {
+                    text: "CCX";
+                    primary: root.cpu-graph == 3;
+                    clicked => {
+                        root.cpu-graph-chosen(3);
+                    }
+                }
+            }
+
+            if root.cells.length > 0: VerticalLayout {
+                vertical-stretch: 3;
+                spacing: 4px;
+
+                Text {
+                    text: root.cells-title;
+                    font-size: 11px;
+                    color: Theme.muted;
+                    overflow: elide;
+                }
+
+                grid := Rectangle {
+                    property <bool> grouped: root.cell-groups.length > 0;
+                    property <int> columns: max(1, root.cell-columns);
+                    property <int> rows: max(1, ceil(root.cells.length / self.columns));
+                    // Grouped grids leave room around each cell for the group's box and label.
+                    property <length> gap: self.grouped ? 14px : 4px;
+                    property <length> inset: self.grouped ? 6px : 0px;
+                    property <length> header: self.grouped ? 20px : 0px;
+                    property <length> cell-width: (self.width - 2 * self.inset - (self.columns - 1) * self.gap) / self.columns;
+                    property <length> cell-height: (self.height - self.inset - (self.rows - 1) * self.gap - self.rows * self.header) / self.rows;
+
+                    vertical-stretch: 1;
+                    min-height: 120px;
+
+                    for group in root.cell-groups: Rectangle {
+                        x: grid.inset + group.column * (grid.cell-width + grid.gap) - grid.inset;
+                        y: group.row * (grid.cell-height + grid.gap + grid.header);
+                        width: group.columns * grid.cell-width + (group.columns - 1) * grid.gap + 2 * grid.inset;
+                        height: grid.header + grid.cell-height + grid.inset;
+                        border-width: 1px;
+                        border-radius: 6px;
+                        border-color: Theme.border;
+                        background: Theme.panel;
+
+                        Text {
+                            x: 8px;
+                            y: 3px;
+                            text: group.title;
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: Theme.text;
+                        }
+                    }
+
+                    for cell[index] in root.cells: CellGraph {
+                        x: grid.inset + mod(index, grid.columns) * (grid.cell-width + grid.gap);
+                        y: floor(index / grid.columns) * (grid.cell-height + grid.gap + grid.header) + grid.header;
+                        width: grid.cell-width;
+                        height: grid.cell-height;
+                        data: cell;
+                    }
+                }
+            }
+
+            for graph in root.big-graphs: PerfGraph {
+                data: graph;
+                vertical-stretch: 3;
+            }
+
+            for pair in root.graph-pairs: HorizontalLayout {
+                spacing: 12px;
+                vertical-stretch: 2;
+
+                PerfGraph {
+                    data: pair.left;
+                    show-axis: false;
+                }
+
+                if pair.has-right: PerfGraph {
+                    data: pair.right;
+                    show-axis: false;
+                }
+                if !pair.has-right: Rectangle { }
+            }
+
+            for graph in root.small-graphs: PerfGraph {
+                data: graph;
+                show-axis: false;
+                vertical-stretch: 1;
+            }
+
+            HorizontalLayout {
+                spacing: 24px;
+                vertical-stretch: root.figures-only ? 1 : 0;
+
+                VerticalLayout {
+                    spacing: root.figures-only ? 28px : 8px;
+                    alignment: start;
+
+                    HorizontalLayout {
+                        spacing: root.figures-only ? 48px : 22px;
+                        alignment: start;
+
+                        for stat in root.stats-top: BigStat {
+                            stat: stat;
+                            large: root.figures-only;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: root.figures-only ? 48px : 22px;
+                        alignment: start;
+
+                        for stat in root.stats-bottom: BigStat {
+                            stat: stat;
+                            large: root.figures-only;
+                        }
+                    }
+
+                    if root.stats-sensors.length > 0: HorizontalLayout {
+                        spacing: root.figures-only ? 48px : 22px;
+                        alignment: start;
+
+                        for stat in root.stats-sensors: BigStat {
+                            stat: stat;
+                            large: root.figures-only;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                VerticalLayout {
+                    spacing: 2px;
+                    alignment: start;
+
+                    for row in root.info: HorizontalLayout {
+                        spacing: 10px;
+
+                        Text {
+                            text: row.label;
+                            font-size: 11px;
+                            color: Theme.muted;
+                            width: 150px;
+                        }
+
+                        Text {
+                            text: row.value;
+                            font-size: 11px;
+                            color: Theme.text;
+                            min-width: 120px;
+                            max-width: 240px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

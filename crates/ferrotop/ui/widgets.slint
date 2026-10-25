@@ -1,0 +1,457 @@
+import { Theme } from "theme.slint";
+
+export struct ProcessRow {
+    icon: image,
+    name: string,
+    pid: string,
+    cpu: string,
+    gpu: string,
+    io-rate: string,
+    private-bytes: string,
+    working-set: string,
+    gpu-dedicated: string,
+    gpu-shared: string,
+    threads: string,
+    handles: string,
+    user: string,
+    description: string,
+    signer: string,
+    suspended: bool,
+    depth: int,
+    has-children: bool,
+    expanded: bool,
+    selected: bool,
+    // 0 normal, 1 new, 2 exited, 3 own, 4 hosts services, 5 system, 6 own + elevated
+    highlight: int,
+}
+
+// Widths of the process list's columns; 0 hides a column.
+export struct ColumnWidths {
+    name: length,
+    pid: length,
+    cpu: length,
+    gpu: length,
+    io: length,
+    private: length,
+    working-set: length,
+    gpu-dedicated: length,
+    gpu-shared: length,
+    threads: length,
+    handles: length,
+    user: length,
+    description: length,
+    signer: length,
+}
+
+// A small history graph. Paths are drawn in a 100x100 box and stretched to fit.
+export component MiniGraph inherits Rectangle {
+    in property <string> line-commands;
+    in property <string> fill-commands;
+    in property <color> tint;
+
+    clip: true;
+
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        fit: fill;
+        commands: root.fill-commands;
+        fill: root.tint.with-alpha(0.2);
+    }
+
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        fit: fill;
+        commands: root.line-commands;
+        stroke: root.tint;
+        stroke-width: 1.5px;
+    }
+}
+
+export component Graph inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <string> line-commands;
+    in property <string> fill-commands;
+    in property <color> tint;
+
+    border-radius: 6px;
+    background: Theme.panel-raised;
+    border-width: 1px;
+    border-color: Theme.border;
+    clip: true;
+
+    MiniGraph {
+        width: parent.width;
+        height: parent.height;
+        line-commands: root.line-commands;
+        fill-commands: root.fill-commands;
+        tint: root.tint;
+    }
+
+    Text {
+        x: 8px;
+        y: 5px;
+        text: root.label;
+        font-size: 11px;
+        color: Theme.muted;
+    }
+
+    Text {
+        x: parent.width - self.width - 8px;
+        y: 4px;
+        text: root.value;
+        font-size: 12px;
+        font-weight: 600;
+        color: Theme.text;
+    }
+}
+
+export component HeaderCell inherits Rectangle {
+    in property <string> text;
+    in property <bool> sorted;
+    in property <bool> ascending;
+    in property <bool> align-right: true;
+    callback clicked;
+
+    height: 28px;
+    background: touch.has-hover ? Theme.hover : transparent;
+    clip: true;
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 4px;
+
+        if root.sorted && root.align-right: Text {
+            text: root.ascending ? "▲" : "▼";
+            font-size: 8px;
+            color: Theme.accent;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            font-size: 11px;
+            font-weight: 600;
+            color: root.sorted ? Theme.text : Theme.muted;
+            vertical-alignment: center;
+            horizontal-alignment: root.align-right ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        if root.sorted && !root.align-right: Text {
+            text: root.ascending ? "▲" : "▼";
+            font-size: 8px;
+            color: Theme.accent;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component Cell inherits Rectangle {
+    in property <string> text;
+    in property <color> text-color: Theme.text;
+    in property <bool> align-right: true;
+
+    clip: true;
+
+    Text {
+        x: 6px;
+        width: max(0px, parent.width - 12px);
+        height: parent.height;
+        text: root.text;
+        color: root.text-color;
+        vertical-alignment: center;
+        horizontal-alignment: root.align-right ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
+        overflow: elide;
+    }
+}
+
+// Process actions offered by the right-click menu.
+export enum ProcessAction { properties, open-location, end, end-tree, suspend, resume, affinity, dump, priority }
+
+export component ProcessRowView inherits Rectangle {
+    in property <ProcessRow> item;
+    in property <ColumnWidths> widths;
+    callback clicked;
+    callback toggle;
+    callback activated;
+    // Right-click, with the pointer's position in window coordinates.
+    callback menu-requested(length, length);
+
+    height: Theme.row-height;
+    background: root.item.selected ? Theme.selection
+        : root.item.highlight != 0 ? Theme.highlight-color(root.item.highlight)
+        : touch.has-hover ? Theme.hover : transparent;
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+        double-clicked => {
+            root.activated();
+        }
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
+                root.menu-requested(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
+
+    // Accent bar so the selection stands out from the blue "system" highlight.
+    if root.item.selected: Rectangle {
+        x: 0;
+        width: 3px;
+        height: parent.height;
+        background: Theme.accent-cool;
+    }
+
+    HorizontalLayout {
+        Rectangle {
+            width: root.widths.name;
+            clip: true;
+
+            HorizontalLayout {
+                padding-left: 4px + root.item.depth * 14px;
+                spacing: 2px;
+
+                Rectangle {
+                    width: 16px;
+
+                    if root.item.has-children: Text {
+                        text: root.item.expanded ? "▾" : "▸";
+                        color: Theme.muted;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+
+                    TouchArea {
+                        enabled: root.item.has-children;
+                        clicked => {
+                            root.toggle();
+                        }
+                    }
+                }
+
+                Image {
+                    source: root.item.icon;
+                    width: 16px;
+                    height: 16px;
+                    y: (parent.height - self.height) / 2;
+                    image-rendering: smooth;
+                }
+
+                Rectangle {
+                    width: 3px;
+                }
+
+                Text {
+                    text: root.item.suspended ? root.item.name + "  (suspended)" : root.item.name;
+                    color: root.item.highlight == 2 || root.item.suspended ? Theme.muted : Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+
+        Cell {
+            width: root.widths.pid;
+            text: root.item.pid;
+            text-color: Theme.muted;
+        }
+
+        Cell {
+            width: root.widths.cpu;
+            text: root.item.cpu;
+            text-color: Theme.cpu-color;
+        }
+
+        Cell {
+            width: root.widths.gpu;
+            text: root.item.gpu;
+            text-color: Theme.gpu-color;
+        }
+
+        Cell {
+            width: root.widths.io;
+            text: root.item.io-rate;
+            text-color: Theme.disk-color;
+        }
+
+        Cell {
+            width: root.widths.private;
+            text: root.item.private-bytes;
+        }
+
+        Cell {
+            width: root.widths.working-set;
+            text: root.item.working-set;
+        }
+
+        Cell {
+            width: root.widths.gpu-dedicated;
+            text: root.item.gpu-dedicated;
+        }
+
+        Cell {
+            width: root.widths.gpu-shared;
+            text: root.item.gpu-shared;
+        }
+
+        Cell {
+            width: root.widths.threads;
+            text: root.item.threads;
+            text-color: Theme.muted;
+        }
+
+        Cell {
+            width: root.widths.handles;
+            text: root.item.handles;
+            text-color: Theme.muted;
+        }
+
+        Cell {
+            width: root.widths.user;
+            text: root.item.user;
+            align-right: false;
+            text-color: Theme.muted;
+        }
+
+        Cell {
+            width: root.widths.description;
+            text: root.item.description;
+            align-right: false;
+        }
+
+        Cell {
+            width: root.widths.signer;
+            text: root.item.signer;
+            align-right: false;
+            text-color: Theme.muted;
+        }
+    }
+}
+
+// One entry in a popup menu.
+export component MenuEntry inherits Rectangle {
+    in property <string> text;
+    in property <bool> indent;
+    callback activated;
+
+    height: 26px;
+    border-radius: 4px;
+    background: touch.has-hover ? Theme.selection : transparent;
+
+    touch := TouchArea {
+        clicked => {
+            root.activated();
+        }
+    }
+
+    Text {
+        x: root.indent ? 24px : 10px;
+        width: parent.width - self.x - 8px;
+        height: parent.height;
+        text: root.text;
+        color: Theme.text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+export component MenuDivider inherits Rectangle {
+    height: 9px;
+
+    Rectangle {
+        y: 4px;
+        height: 1px;
+        background: Theme.border;
+    }
+}
+
+export component LegendItem inherits HorizontalLayout {
+    in property <string> text;
+    in property <brush> swatch;
+
+    spacing: 4px;
+    alignment: start;
+
+    Rectangle {
+        width: 10px;
+        height: 10px;
+        y: (parent.height - self.height) / 2;
+        border-radius: 2px;
+        background: root.swatch;
+        border-width: 1px;
+        border-color: Theme.border;
+    }
+
+    Text {
+        text: root.text;
+        font-size: 11px;
+        color: Theme.muted;
+        vertical-alignment: center;
+    }
+}
+
+export component DetailLabel inherits Text {
+    font-size: 11px;
+    color: Theme.muted;
+    vertical-alignment: center;
+    width: 92px;
+}
+
+export component DetailValue inherits TextInput {
+    read-only: true;
+    single-line: true;
+    color: Theme.text;
+    selection-background-color: Theme.selection;
+    vertical-alignment: center;
+}
+
+// A text tab in the toolbar, underlined when active.
+export component Tab inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked;
+
+    width: label.preferred-width + 20px;
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    label := Text {
+        text: root.text;
+        font-size: 13px;
+        font-weight: root.active ? 700 : 400;
+        color: root.active ? Theme.text : touch.has-hover ? Theme.text : Theme.muted;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    Rectangle {
+        y: parent.height - 3px;
+        x: 8px;
+        width: parent.width - 16px;
+        height: 3px;
+        border-radius: 1.5px;
+        background: root.active ? Theme.accent : transparent;
+    }
+}

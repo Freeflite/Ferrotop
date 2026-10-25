@@ -1,0 +1,1933 @@
+import { AboutSlint, Button, CheckBox, LineEdit, ListView, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import {
+    ColumnWidths, DetailLabel, DetailValue, Graph, HeaderCell, LegendItem, MenuDivider, MenuEntry, ProcessAction, ProcessRow,
+    ProcessRowView, Tab,
+} from "widgets.slint";
+import { CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, PerformancePage, Stat } from "performance.slint";
+import { DataTable, TableColumn, TablePanel, TableRowData } from "table.slint";
+
+export { Theme, ProcessRow, ProcessAction, CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, Stat, TableColumn, TableRowData }
+
+// The generic tables, and what happened to one of them.
+export enum TableId { services, network, find, properties, stack }
+export enum TableEvent { sort, click, activate, move, action }
+
+// Everything about a table except its columns and rows (which are models set once from Rust).
+export struct TableMeta {
+    content-width: length,
+    sort-column: int,
+    sort-ascending: bool,
+    selected-index: int,
+    status: string,
+    empty-text: string,
+}
+
+export struct AffinityCpu {
+    label: string,
+    checked: bool,
+}
+
+// Pages: 0 Processes, 1 Performance, 2 Services, 3 Network, 4 process properties, 5 Find.
+export component MainWindow inherits Window {
+    title: "Ferrotop";
+    icon: @image-url("../assets/ferrotop-256.png");
+    preferred-width: 1100px;
+    preferred-height: 700px;
+    min-width: 760px;
+    min-height: 480px;
+    background: Theme.background;
+    default-font-size: 12px;
+    forward-focus: list-focus;
+
+    // Theme: 0 = light, 1 = dark, 2 = follow Windows. Rust resolves "follow Windows" into `dark-mode`
+    // (which drives the std widgets' palette) and sets `Theme.dark` to match.
+    in property <int> theme-index;
+    in property <bool> dark-mode;
+    changed dark-mode => {
+        Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+    }
+    init => {
+        Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    in-out property <int> page;
+
+    in property <[ProcessRow]> rows;
+    in property <int> selected-index: -1;
+    in property <int> sort-column;
+    in property <bool> sort-ascending;
+    in-out property <bool> tree-mode: true;
+
+    in-out property <bool> show-pid: true;
+    in-out property <bool> show-cpu: true;
+    in-out property <bool> show-gpu: true;
+    in-out property <bool> show-io: true;
+    in-out property <bool> show-private: true;
+    in-out property <bool> show-working-set: true;
+    in-out property <bool> show-gpu-dedicated: true;
+    in-out property <bool> show-gpu-shared;
+    in-out property <bool> show-threads;
+    in-out property <bool> show-handles;
+    in-out property <bool> show-user: true;
+    in-out property <bool> show-description: true;
+    in-out property <bool> show-signer;
+
+    in property <string> cpu-text;
+    in property <string> cpu-line;
+    in property <string> cpu-fill;
+    in property <string> memory-text;
+    in property <string> memory-line;
+    in property <string> memory-fill;
+
+    in property <string> status-cpu;
+    in property <string> status-memory;
+    in property <string> status-counts;
+    in property <string> status-message;
+    in property <bool> elevated;
+
+    in property <bool> has-selection;
+    in property <string> detail-name;
+    in property <string> detail-summary;
+    in property <string> detail-identity;
+    in property <string> detail-services;
+    in property <string> detail-path;
+    in property <string> detail-command-line;
+    in property <string> detail-usage;
+
+    in property <[DeviceTile]> devices;
+    in property <int> selected-device;
+    in property <string> device-title;
+    in property <string> device-model;
+    in property <[GraphData]> big-graphs;
+    in property <[GraphPair]> graph-pairs;
+    in property <[GraphData]> small-graphs;
+    in property <[Stat]> stats-top;
+    in property <[Stat]> stats-bottom;
+    in property <[Stat]> stats-sensors;
+    in property <[Stat]> device-info;
+    in property <bool> show-cpu-graphs;
+    in property <int> cpu-graph;
+    in property <[GraphData]> cpu-cells;
+    in property <[CellGroup]> cpu-cell-groups;
+    in property <int> cell-columns;
+    in property <string> cells-title;
+    in property <bool> figures-only;
+    in property <[GraphToggle]> graph-toggles;
+
+    // Generic tables.
+    in property <[TableColumn]> services-columns;
+    in property <[TableRowData]> services-rows;
+    in property <TableMeta> services-meta;
+    in property <[TableColumn]> network-columns;
+    in property <[TableRowData]> network-rows;
+    in property <TableMeta> network-meta;
+    in property <[TableColumn]> find-columns;
+    in property <[TableRowData]> find-rows;
+    in property <TableMeta> find-meta;
+    in property <[TableColumn]> properties-columns;
+    in property <[TableRowData]> properties-rows;
+    in property <TableMeta> properties-meta;
+    in property <[TableColumn]> stack-columns;
+    in property <[TableRowData]> stack-rows;
+    in property <TableMeta> stack-meta;
+
+    // Process properties page.
+    in property <image> properties-icon;
+    in property <string> properties-title;
+    in property <string> properties-subtitle;
+    in property <[string]> properties-tabs;
+    in property <int> properties-tab;
+    in property <[string]> properties-actions;
+
+    // Find handles or DLLs page.
+    in property <bool> find-running;
+
+    // Dialogs.
+    in-out property <bool> confirm-open;
+    in property <string> confirm-title;
+    in property <string> confirm-text;
+    in property <string> confirm-button: "OK";
+    in-out property <bool> run-open;
+    in-out property <bool> affinity-open;
+    in property <string> affinity-title;
+    in property <[AffinityCpu]> affinity-cpus;
+    in-out property <bool> stack-open;
+    in property <string> stack-title;
+
+    // The right-click menu: where it opens, and the process it acts on (fixed when it opened).
+    property <length> menu-x;
+    property <length> menu-y;
+    in property <string> menu-title;
+    in property <bool> menu-suspended;
+
+    callback row-clicked(int);
+    callback row-activated(int);
+    callback toggle-expand(int);
+    callback set-expanded(bool);
+    callback move-selection(int);
+    callback sort-by(int);
+    callback filter-changed(string);
+    callback tree-toggled(bool);
+    callback theme-chosen(int);
+    callback columns-changed();
+    callback request-terminate();
+    callback confirm-accepted();
+    callback restart-elevated();
+    callback select-device(int);
+    callback cpu-graph-chosen(int);
+    callback page-shown(int);
+    callback graph-toggled(int, bool);
+    // A row was right-clicked: Rust fixes which process the menu acts on.
+    callback process-menu-requested(int);
+    // `value` is the priority class index (0 Idle .. 5 Realtime) for `priority`, else -1.
+    callback process-menu(ProcessAction, int);
+    callback table-event(TableId, TableEvent, int);
+    callback table-filter(TableId, string);
+    callback properties-tab-chosen(int);
+    callback properties-back();
+    callback find-start(string);
+    callback find-cancel();
+    callback run-task(string, bool);
+    callback affinity-toggled(int, bool);
+    callback affinity-all(bool);
+    callback affinity-apply();
+
+    public function show-page(page: int) {
+        root.page = page;
+        // Give the page the keyboard: a hidden element can't keep focus.
+        if (page == 0) {
+            list-focus.focus();
+        } else if (page == 1) {
+            performance.focus-list();
+        } else if (page == 2) {
+            services.focus-table();
+        } else if (page == 3) {
+            network.focus-table();
+        } else if (page == 4) {
+            properties.focus-table();
+        } else if (page == 5) {
+            find.focus-table();
+        }
+        root.page-shown(page);
+    }
+
+    public function focus-table(table: TableId) {
+        if (table == TableId.services) {
+            services.focus-table();
+        } else if (table == TableId.network) {
+            network.focus-table();
+        } else if (table == TableId.find) {
+            find.focus-table();
+        } else if (table == TableId.properties) {
+            properties.focus-table();
+        }
+    }
+
+    property <length> pid-width: root.show-pid ? 60px : 0px;
+    property <length> cpu-width: root.show-cpu ? 56px : 0px;
+    property <length> gpu-width: root.show-gpu ? 52px : 0px;
+    property <length> io-width: root.show-io ? 78px : 0px;
+    property <length> private-width: root.show-private ? 84px : 0px;
+    property <length> working-set-width: root.show-working-set ? 84px : 0px;
+    property <length> gpu-dedicated-width: root.show-gpu-dedicated ? 86px : 0px;
+    property <length> gpu-shared-width: root.show-gpu-shared ? 86px : 0px;
+    property <length> threads-width: root.show-threads ? 62px : 0px;
+    property <length> handles-width: root.show-handles ? 70px : 0px;
+    property <length> user-width: root.show-user ? 130px : 0px;
+    property <length> description-width: root.show-description ? 170px : 0px;
+    property <length> signer-width: root.show-signer ? 170px : 0px;
+    property <length> fixed-width: root.pid-width + root.cpu-width + root.gpu-width + root.io-width + root.private-width + root.working-set-width + root.gpu-dedicated-width + root.gpu-shared-width + root.threads-width + root.handles-width + root.user-width + root.description-width + root.signer-width;
+    property <length> name-width: max(180px, list.visible-width - root.fixed-width);
+    property <ColumnWidths> widths: {
+        name: root.name-width,
+        pid: root.pid-width,
+        cpu: root.cpu-width,
+        gpu: root.gpu-width,
+        io: root.io-width,
+        private: root.private-width,
+        working-set: root.working-set-width,
+        gpu-dedicated: root.gpu-dedicated-width,
+        gpu-shared: root.gpu-shared-width,
+        threads: root.threads-width,
+        handles: root.handles-width,
+        user: root.user-width,
+        description: root.description-width,
+        signer: root.signer-width,
+    };
+
+    property <length> pid-x: root.name-width;
+    property <length> cpu-x: root.pid-x + root.pid-width;
+    property <length> gpu-x: root.cpu-x + root.cpu-width;
+    property <length> io-x: root.gpu-x + root.gpu-width;
+    property <length> private-x: root.io-x + root.io-width;
+    property <length> working-set-x: root.private-x + root.private-width;
+    property <length> gpu-dedicated-x: root.working-set-x + root.working-set-width;
+    property <length> gpu-shared-x: root.gpu-dedicated-x + root.gpu-dedicated-width;
+    property <length> threads-x: root.gpu-shared-x + root.gpu-shared-width;
+    property <length> handles-x: root.threads-x + root.threads-width;
+    property <length> user-x: root.handles-x + root.handles-width;
+    property <length> description-x: root.user-x + root.user-width;
+    property <length> signer-x: root.description-x + root.description-width;
+
+    public function ensure-visible() {
+        if (root.selected-index < 0) {
+            return;
+        }
+        if (root.selected-index * Theme.row-height < -list.content-y) {
+            list.content-y = -(root.selected-index * Theme.row-height);
+        } else if ((root.selected-index + 1) * Theme.row-height > -list.content-y + list.visible-height) {
+            list.content-y = -((root.selected-index + 1) * Theme.row-height - list.visible-height);
+        }
+    }
+
+    // Keys no focused element handled: page switching and the properties page's tabs.
+    page-keys := FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control && event.text == "1") {
+                root.show-page(0);
+                return accept;
+            }
+            if (event.modifiers.control && event.text == "2") {
+                root.show-page(1);
+                return accept;
+            }
+            if (event.modifiers.control && event.text == "3") {
+                root.show-page(2);
+                return accept;
+            }
+            if (event.modifiers.control && event.text == "4") {
+                root.show-page(3);
+                return accept;
+            }
+            if (root.page == 4 && event.modifiers.control && event.text == Key.Tab) {
+                root.properties-tab-chosen(mod(root.properties-tab + 1, root.properties-tabs.length));
+                return accept;
+            }
+            if (root.page == 4 && event.modifiers.control && event.text == Key.Backtab) {
+                root.properties-tab-chosen(mod(root.properties-tab + root.properties-tabs.length - 1, root.properties-tabs.length));
+                return accept;
+            }
+            if ((root.page == 4 || root.page == 5) && event.text == Key.Escape) {
+                if (root.page == 4) {
+                    root.properties-back();
+                } else {
+                    root.show-page(0);
+                }
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            // Top bar: identity, page tabs, live graphs, filter and actions.
+            Rectangle {
+                background: Theme.panel;
+                height: 66px;
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 12px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 10px;
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 1px;
+
+                        Text {
+                            text: "Ferrotop";
+                            font-size: 19px;
+                            font-weight: 700;
+                            color: Theme.accent;
+                        }
+
+                        Text {
+                            text: "process explorer";
+                            font-size: 10px;
+                            color: Theme.muted;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 4px;
+                    }
+
+                    Tab {
+                        text: "Processes";
+                        active: root.page == 0 || root.page == 4 || root.page == 5;
+                        clicked => {
+                            root.show-page(0);
+                        }
+                    }
+
+                    Tab {
+                        text: "Performance";
+                        active: root.page == 1;
+                        clicked => {
+                            root.show-page(1);
+                        }
+                    }
+
+                    Tab {
+                        text: "Services";
+                        active: root.page == 2;
+                        clicked => {
+                            root.show-page(2);
+                        }
+                    }
+
+                    Tab {
+                        text: "Network";
+                        active: root.page == 3;
+                        clicked => {
+                            root.show-page(3);
+                        }
+                    }
+
+                    Rectangle {
+                        width: 4px;
+                    }
+
+                    Graph {
+                        label: "CPU";
+                        value: root.cpu-text;
+                        line-commands: root.cpu-line;
+                        fill-commands: root.cpu-fill;
+                        tint: Theme.cpu-color;
+                        width: 120px;
+                    }
+
+                    Graph {
+                        label: "Memory";
+                        value: root.memory-text;
+                        line-commands: root.memory-line;
+                        fill-commands: root.memory-fill;
+                        tint: Theme.memory-color;
+                        width: 120px;
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    if root.page == 0: VerticalLayout {
+                        alignment: center;
+
+                        LineEdit {
+                            width: 190px;
+                            placeholder-text: "Filter: name, description, PID";
+                            edited(text) => {
+                                root.filter-changed(text);
+                            }
+                            accepted => {
+                                list-focus.focus();
+                            }
+                        }
+                    }
+
+                    if root.page == 0: VerticalLayout {
+                        alignment: center;
+
+                        Button {
+                            text: "End process";
+                            enabled: root.has-selection;
+                            clicked => {
+                                root.request-terminate();
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+
+                        Button {
+                            text: "View";
+                            clicked => {
+                                view-menu.show();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // The pages share this space; hidden ones keep their state.
+            Rectangle {
+                vertical-stretch: 1;
+
+                Rectangle {
+                    visible: root.page == 0;
+                    width: parent.width;
+                    height: parent.height;
+
+                    VerticalLayout {
+                        // Column headers. Absolutely positioned (not a layout) so the column widths,
+                        // which follow the list's width, don't feed back into the window's minimum size.
+                        Rectangle {
+                            background: Theme.panel;
+                            height: 28px;
+
+                            HeaderCell {
+                                x: 0;
+                                width: root.name-width;
+                                text: "Name";
+                                align-right: false;
+                                sorted: root.sort-column == 1;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(1);
+                                }
+                            }
+
+                            if root.show-pid: HeaderCell {
+                                x: root.pid-x;
+                                width: root.pid-width;
+                                text: "PID";
+                                sorted: root.sort-column == 2;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(2);
+                                }
+                            }
+
+                            if root.show-cpu: HeaderCell {
+                                x: root.cpu-x;
+                                width: root.cpu-width;
+                                text: "CPU";
+                                sorted: root.sort-column == 3;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(3);
+                                }
+                            }
+
+                            if root.show-gpu: HeaderCell {
+                                x: root.gpu-x;
+                                width: root.gpu-width;
+                                text: "GPU";
+                                sorted: root.sort-column == 11;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(11);
+                                }
+                            }
+
+                            if root.show-io: HeaderCell {
+                                x: root.io-x;
+                                width: root.io-width;
+                                text: "I/O total";
+                                sorted: root.sort-column == 4;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(4);
+                                }
+                            }
+
+                            if root.show-private: HeaderCell {
+                                x: root.private-x;
+                                width: root.private-width;
+                                text: "Private bytes";
+                                sorted: root.sort-column == 5;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(5);
+                                }
+                            }
+
+                            if root.show-working-set: HeaderCell {
+                                x: root.working-set-x;
+                                width: root.working-set-width;
+                                text: "Working set";
+                                sorted: root.sort-column == 6;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(6);
+                                }
+                            }
+
+                            if root.show-gpu-dedicated: HeaderCell {
+                                x: root.gpu-dedicated-x;
+                                width: root.gpu-dedicated-width;
+                                text: "GPU memory";
+                                sorted: root.sort-column == 12;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(12);
+                                }
+                            }
+
+                            if root.show-gpu-shared: HeaderCell {
+                                x: root.gpu-shared-x;
+                                width: root.gpu-shared-width;
+                                text: "Shared GPU";
+                                sorted: root.sort-column == 13;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(13);
+                                }
+                            }
+
+                            if root.show-threads: HeaderCell {
+                                x: root.threads-x;
+                                width: root.threads-width;
+                                text: "Threads";
+                                sorted: root.sort-column == 7;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(7);
+                                }
+                            }
+
+                            if root.show-handles: HeaderCell {
+                                x: root.handles-x;
+                                width: root.handles-width;
+                                text: "Handles";
+                                sorted: root.sort-column == 8;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(8);
+                                }
+                            }
+
+                            if root.show-user: HeaderCell {
+                                x: root.user-x;
+                                width: root.user-width;
+                                text: "User name";
+                                align-right: false;
+                                sorted: root.sort-column == 9;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(9);
+                                }
+                            }
+
+                            if root.show-description: HeaderCell {
+                                x: root.description-x;
+                                width: root.description-width;
+                                text: "Description";
+                                align-right: false;
+                                sorted: root.sort-column == 10;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(10);
+                                }
+                            }
+
+                            if root.show-signer: HeaderCell {
+                                x: root.signer-x;
+                                width: root.signer-width;
+                                text: "Verified signer";
+                                align-right: false;
+                                sorted: root.sort-column == 14;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(14);
+                                }
+                            }
+
+                            Rectangle {
+                                y: parent.height - 1px;
+                                height: 1px;
+                                background: Theme.border;
+                            }
+                        }
+
+                        // The process list.
+                        list-focus := FocusScope {
+                            vertical-stretch: 1;
+
+                            key-pressed(event) => {
+                                if (event.modifiers.control && event.text == "2") {
+                                    root.show-page(1);
+                                    return accept;
+                                }
+                                if (event.modifiers.control && event.text == "3") {
+                                    root.show-page(2);
+                                    return accept;
+                                }
+                                if (event.modifiers.control && event.text == "4") {
+                                    root.show-page(3);
+                                    return accept;
+                                }
+                                if (event.text == Key.UpArrow) {
+                                    root.move-selection(-1);
+                                    root.ensure-visible();
+                                    return accept;
+                                }
+                                if (event.text == Key.DownArrow) {
+                                    root.move-selection(1);
+                                    root.ensure-visible();
+                                    return accept;
+                                }
+                                if (event.text == Key.PageUp) {
+                                    root.move-selection(-20);
+                                    root.ensure-visible();
+                                    return accept;
+                                }
+                                if (event.text == Key.PageDown) {
+                                    root.move-selection(20);
+                                    root.ensure-visible();
+                                    return accept;
+                                }
+                                if (event.text == Key.LeftArrow) {
+                                    root.set-expanded(false);
+                                    return accept;
+                                }
+                                if (event.text == Key.RightArrow) {
+                                    root.set-expanded(true);
+                                    return accept;
+                                }
+                                if (event.text == Key.Delete) {
+                                    root.request-terminate();
+                                    return accept;
+                                }
+                                if (event.text == Key.Return && root.selected-index >= 0) {
+                                    root.row-activated(root.selected-index);
+                                    return accept;
+                                }
+                                reject
+                            }
+
+                            list := ListView {
+                                width: parent.width;
+                                height: parent.height;
+
+                                for row[index] in root.rows: ProcessRowView {
+                                    item: row;
+                                    widths: root.widths;
+                                    clicked => {
+                                        list-focus.focus();
+                                        root.row-clicked(index);
+                                    }
+                                    toggle => {
+                                        list-focus.focus();
+                                        root.toggle-expand(index);
+                                    }
+                                    activated => {
+                                        root.row-activated(index);
+                                    }
+                                    menu-requested(x, y) => {
+                                        list-focus.focus();
+                                        root.menu-x = x;
+                                        root.menu-y = y;
+                                        root.process-menu-requested(index);
+                                        process-menu.show();
+                                    }
+                                }
+                            }
+                        }
+
+                        // Details for the selected process.
+                        if root.has-selection: Rectangle {
+                            background: Theme.panel;
+
+                            Rectangle {
+                                height: 1px;
+                                y: 0;
+                                background: Theme.border;
+                            }
+
+                            VerticalLayout {
+                                padding: 10px;
+                                padding-left: 14px;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 10px;
+
+                                    Text {
+                                        text: root.detail-name;
+                                        font-size: 14px;
+                                        font-weight: 700;
+                                        color: Theme.text;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Text {
+                                        text: root.detail-summary;
+                                        color: Theme.muted;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    Button {
+                                        text: "Properties";
+                                        clicked => {
+                                            root.row-activated(root.selected-index);
+                                        }
+                                    }
+                                }
+
+                                if root.detail-identity != "": Text {
+                                    text: root.detail-identity;
+                                    color: Theme.text;
+                                    overflow: elide;
+                                }
+
+                                HorizontalLayout {
+                                    DetailLabel {
+                                        text: "Image path";
+                                    }
+
+                                    DetailValue {
+                                        text: root.detail-path;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    DetailLabel {
+                                        text: "Command line";
+                                    }
+
+                                    DetailValue {
+                                        text: root.detail-command-line;
+                                    }
+                                }
+
+                                if root.detail-services != "": HorizontalLayout {
+                                    DetailLabel {
+                                        text: "Services";
+                                    }
+
+                                    DetailValue {
+                                        text: root.detail-services;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    DetailLabel {
+                                        text: "Usage";
+                                    }
+
+                                    Text {
+                                        text: root.detail-usage;
+                                        color: Theme.text;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                performance := PerformancePage {
+                    visible: root.page == 1;
+                    width: parent.width;
+                    height: parent.height;
+                    devices: root.devices;
+                    selected-device: root.selected-device;
+                    title: root.device-title;
+                    model: root.device-model;
+                    big-graphs: root.big-graphs;
+                    graph-pairs: root.graph-pairs;
+                    small-graphs: root.small-graphs;
+                    stats-top: root.stats-top;
+                    stats-bottom: root.stats-bottom;
+                    stats-sensors: root.stats-sensors;
+                    info: root.device-info;
+                    show-cpu-graphs: root.show-cpu-graphs;
+                    cpu-graph: root.cpu-graph;
+                    cells: root.cpu-cells;
+                    cell-groups: root.cpu-cell-groups;
+                    cell-columns: root.cell-columns;
+                    cells-title: root.cells-title;
+                    figures-only: root.figures-only;
+                    select-device(index) => {
+                        root.select-device(index);
+                    }
+                    cpu-graph-chosen(graph) => {
+                        root.cpu-graph-chosen(graph);
+                    }
+                    show-page(page) => {
+                        root.show-page(page);
+                    }
+                }
+
+                services := TablePanel {
+                    visible: root.page == 2;
+                    width: parent.width;
+                    height: parent.height;
+                    padding-top: 10px;
+                    columns: root.services-columns;
+                    rows: root.services-rows;
+                    content-width: root.services-meta.content-width;
+                    sort-column: root.services-meta.sort-column;
+                    sort-ascending: root.services-meta.sort-ascending;
+                    selected-index: root.services-meta.selected-index;
+                    status: root.services-meta.status;
+                    empty-text: root.services-meta.empty-text;
+                    filter-placeholder: "Filter services";
+                    actions: ["Start", "Stop", "Restart", "Go to process"];
+                    filter-changed(text) => {
+                        root.table-filter(TableId.services, text);
+                    }
+                    sort-by(column) => {
+                        root.table-event(TableId.services, TableEvent.sort, column);
+                    }
+                    row-clicked(index) => {
+                        root.table-event(TableId.services, TableEvent.click, index);
+                    }
+                    row-activated(index) => {
+                        root.table-event(TableId.services, TableEvent.activate, index);
+                    }
+                    move-selection(step) => {
+                        root.table-event(TableId.services, TableEvent.move, step);
+                    }
+                    action(index) => {
+                        root.table-event(TableId.services, TableEvent.action, index);
+                    }
+                }
+
+                network := TablePanel {
+                    visible: root.page == 3;
+                    width: parent.width;
+                    height: parent.height;
+                    padding-top: 10px;
+                    columns: root.network-columns;
+                    rows: root.network-rows;
+                    content-width: root.network-meta.content-width;
+                    sort-column: root.network-meta.sort-column;
+                    sort-ascending: root.network-meta.sort-ascending;
+                    selected-index: root.network-meta.selected-index;
+                    status: root.network-meta.status;
+                    empty-text: root.network-meta.empty-text;
+                    filter-placeholder: "Filter connections";
+                    actions: ["Go to process"];
+                    filter-changed(text) => {
+                        root.table-filter(TableId.network, text);
+                    }
+                    sort-by(column) => {
+                        root.table-event(TableId.network, TableEvent.sort, column);
+                    }
+                    row-clicked(index) => {
+                        root.table-event(TableId.network, TableEvent.click, index);
+                    }
+                    row-activated(index) => {
+                        root.table-event(TableId.network, TableEvent.activate, index);
+                    }
+                    move-selection(step) => {
+                        root.table-event(TableId.network, TableEvent.move, step);
+                    }
+                    action(index) => {
+                        root.table-event(TableId.network, TableEvent.action, index);
+                    }
+                }
+
+                // Process properties.
+                Rectangle {
+                    visible: root.page == 4;
+                    width: parent.width;
+                    height: parent.height;
+
+                    VerticalLayout {
+                        spacing: 6px;
+
+                        Rectangle {
+                            background: Theme.panel;
+                            height: 58px;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 12px;
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: "‹ Back";
+                                        clicked => {
+                                            root.properties-back();
+                                        }
+                                    }
+                                }
+
+                                Image {
+                                    source: root.properties-icon;
+                                    width: 32px;
+                                    height: 32px;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+
+                                    Text {
+                                        text: root.properties-title;
+                                        font-size: 16px;
+                                        font-weight: 700;
+                                        color: Theme.text;
+                                        overflow: elide;
+                                    }
+
+                                    Text {
+                                        text: root.properties-subtitle;
+                                        color: Theme.muted;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            height: 34px;
+
+                            for tab[i] in root.properties-tabs: Tab {
+                                text: tab;
+                                active: i == root.properties-tab;
+                                clicked => {
+                                    root.properties-tab-chosen(i);
+                                }
+                            }
+
+                            Rectangle { }
+                        }
+
+                        properties := TablePanel {
+                            vertical-stretch: 1;
+                            columns: root.properties-columns;
+                            rows: root.properties-rows;
+                            content-width: root.properties-meta.content-width;
+                            sort-column: root.properties-meta.sort-column;
+                            sort-ascending: root.properties-meta.sort-ascending;
+                            selected-index: root.properties-meta.selected-index;
+                            status: root.properties-meta.status;
+                            empty-text: root.properties-meta.empty-text;
+                            actions: root.properties-actions;
+                            filter-changed(text) => {
+                                root.table-filter(TableId.properties, text);
+                            }
+                            sort-by(column) => {
+                                root.table-event(TableId.properties, TableEvent.sort, column);
+                            }
+                            row-clicked(index) => {
+                                root.table-event(TableId.properties, TableEvent.click, index);
+                            }
+                            row-activated(index) => {
+                                root.table-event(TableId.properties, TableEvent.activate, index);
+                            }
+                            move-selection(step) => {
+                                root.table-event(TableId.properties, TableEvent.move, step);
+                            }
+                            action(index) => {
+                                root.table-event(TableId.properties, TableEvent.action, index);
+                            }
+                        }
+                    }
+                }
+
+                // Find handles or DLLs.
+                Rectangle {
+                    visible: root.page == 5;
+                    width: parent.width;
+                    height: parent.height;
+
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        Rectangle {
+                            background: Theme.panel;
+                            height: 50px;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 10px;
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: "‹ Back";
+                                        clicked => {
+                                            root.show-page(0);
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: "Find handles or DLLs";
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    query := LineEdit {
+                                        width: 320px;
+                                        placeholder-text: "Part of a file, key, mutex or DLL name";
+                                        accepted(text) => {
+                                            root.find-start(text);
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: root.find-running ? "Cancel" : "Search";
+                                        primary: !root.find-running;
+                                        clicked => {
+                                            if (root.find-running) {
+                                                root.find-cancel();
+                                            } else {
+                                                root.find-start(query.text);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+
+                        find := TablePanel {
+                            vertical-stretch: 1;
+                            columns: root.find-columns;
+                            rows: root.find-rows;
+                            content-width: root.find-meta.content-width;
+                            sort-column: root.find-meta.sort-column;
+                            sort-ascending: root.find-meta.sort-ascending;
+                            selected-index: root.find-meta.selected-index;
+                            status: root.find-meta.status;
+                            empty-text: root.find-meta.empty-text;
+                            filter-placeholder: "Filter results";
+                            actions: ["Go to process"];
+                            filter-changed(text) => {
+                                root.table-filter(TableId.find, text);
+                            }
+                            sort-by(column) => {
+                                root.table-event(TableId.find, TableEvent.sort, column);
+                            }
+                            row-clicked(index) => {
+                                root.table-event(TableId.find, TableEvent.click, index);
+                            }
+                            row-activated(index) => {
+                                root.table-event(TableId.find, TableEvent.activate, index);
+                            }
+                            move-selection(step) => {
+                                root.table-event(TableId.find, TableEvent.move, step);
+                            }
+                            action(index) => {
+                                root.table-event(TableId.find, TableEvent.action, index);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Status bar.
+            Rectangle {
+                background: Theme.panel;
+                height: 28px;
+
+                Rectangle {
+                    height: 1px;
+                    y: 0;
+                    background: Theme.border;
+                }
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 16px;
+
+                    Text {
+                        text: root.status-cpu;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.status-memory;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.status-counts;
+                        color: Theme.muted;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.status-message;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+
+                    if root.elevated: Text {
+                        text: "Administrator";
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+
+                    if !root.elevated: Rectangle {
+                        width: run-as-admin.preferred-width;
+
+                        run-as-admin := Text {
+                            text: "Run as administrator";
+                            color: Theme.accent-cool;
+                            vertical-alignment: center;
+                            height: parent.height;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.restart-elevated();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Confirmation for actions that can't be undone, drawn over everything.
+    if root.confirm-open: Rectangle {
+        background: #000000a8;
+        init => {
+            dialog-keys.focus();
+        }
+
+        TouchArea { }
+
+        // Enter confirms, Escape cancels.
+        dialog-keys := FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.confirm-open = false;
+                    list-focus.focus();
+                    return accept;
+                }
+                if (event.text == Key.Return) {
+                    root.confirm-open = false;
+                    root.confirm-accepted();
+                    list-focus.focus();
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        Rectangle {
+            width: 460px;
+            height: 210px;
+            border-radius: 8px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                Text {
+                    text: root.confirm-title;
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: root.confirm-text;
+                    wrap: word-wrap;
+                    color: Theme.muted;
+                    vertical-stretch: 1;
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    Button {
+                        text: "Cancel";
+                        clicked => {
+                            root.confirm-open = false;
+                            list-focus.focus();
+                        }
+                    }
+
+                    Button {
+                        text: root.confirm-button;
+                        primary: true;
+                        clicked => {
+                            root.confirm-open = false;
+                            root.confirm-accepted();
+                            list-focus.focus();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Run a new program, like the Run box.
+    if root.run-open: Rectangle {
+        background: #000000a8;
+
+        TouchArea { }
+
+        Rectangle {
+            width: 480px;
+            height: 200px;
+            border-radius: 8px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                Text {
+                    text: "Run new task";
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+
+                Text {
+                    text: root.elevated
+                        ? "Ferrotop is running as administrator, so the program will be too."
+                        : "Type the name of a program, folder or document.";
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+
+                command := LineEdit {
+                    placeholder-text: "e.g. notepad, cmd, or a quoted path with arguments";
+                    init => {
+                        self.focus();
+                    }
+                    accepted(text) => {
+                        root.run-open = false;
+                        root.run-task(text, run-elevated.checked);
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    run-elevated := CheckBox {
+                        text: "Run as administrator";
+                        enabled: !root.elevated;
+                        checked: root.elevated;
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    Button {
+                        text: "Cancel";
+                        clicked => {
+                            root.run-open = false;
+                        }
+                    }
+
+                    Button {
+                        text: "Run";
+                        primary: true;
+                        clicked => {
+                            root.run-open = false;
+                            root.run-task(command.text, run-elevated.checked);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Which logical processors a process may run on.
+    if root.affinity-open: Rectangle {
+        background: #000000a8;
+
+        TouchArea { }
+
+        Rectangle {
+            width: 620px;
+            height: min(root.height - 40px, 140px + ceil(root.affinity-cpus.length / 8) * 26px);
+            border-radius: 8px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                Text {
+                    text: root.affinity-title;
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                    clip: true;
+
+                    for cpu[i] in root.affinity-cpus: CheckBox {
+                        x: mod(i, 8) * 72px;
+                        y: floor(i / 8) * 26px;
+                        width: 70px;
+                        text: cpu.label;
+                        checked: cpu.checked;
+                        toggled => {
+                            root.affinity-toggled(i, self.checked);
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    Button {
+                        text: "All";
+                        clicked => {
+                            root.affinity-all(true);
+                        }
+                    }
+
+                    Button {
+                        text: "None";
+                        clicked => {
+                            root.affinity-all(false);
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    Button {
+                        text: "Cancel";
+                        clicked => {
+                            root.affinity-open = false;
+                        }
+                    }
+
+                    Button {
+                        text: "Apply";
+                        primary: true;
+                        clicked => {
+                            root.affinity-open = false;
+                            root.affinity-apply();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // A thread's call stack.
+    if root.stack-open: Rectangle {
+        background: #000000a8;
+
+        TouchArea { }
+
+        Rectangle {
+            width: min(root.width - 60px, 900px);
+            height: min(root.height - 60px, 560px);
+            border-radius: 8px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    Text {
+                        text: root.stack-title;
+                        font-size: 15px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+
+                    Button {
+                        text: "Close";
+                        clicked => {
+                            root.stack-open = false;
+                        }
+                    }
+                }
+
+                DataTable {
+                    vertical-stretch: 1;
+                    columns: root.stack-columns;
+                    rows: root.stack-rows;
+                    content-width: root.stack-meta.content-width;
+                    selected-index: root.stack-meta.selected-index;
+                    empty-text: root.stack-meta.empty-text;
+                    row-clicked(index) => {
+                        root.table-event(TableId.stack, TableEvent.click, index);
+                    }
+                    move-selection(step) => {
+                        root.table-event(TableId.stack, TableEvent.move, step);
+                    }
+                }
+            }
+        }
+    }
+
+    process-menu := PopupWindow {
+        x: max(0px, min(root.menu-x, root.width - self.width - 4px));
+        y: max(0px, min(root.menu-y, root.height - self.height - 4px));
+        width: 230px;
+        height: 432px;
+
+        Rectangle {
+            border-radius: 8px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000040;
+
+            VerticalLayout {
+                padding: 6px;
+
+                Text {
+                    height: 26px;
+                    text: root.menu-title;
+                    font-weight: 700;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                MenuDivider { }
+
+                MenuEntry {
+                    text: "Properties";
+                    activated => {
+                        root.process-menu(ProcessAction.properties, -1);
+                    }
+                }
+
+                MenuEntry {
+                    text: "Open file location";
+                    activated => {
+                        root.process-menu(ProcessAction.open-location, -1);
+                    }
+                }
+
+                MenuDivider { }
+
+                MenuEntry {
+                    text: "End process";
+                    activated => {
+                        root.process-menu(ProcessAction.end, -1);
+                    }
+                }
+
+                MenuEntry {
+                    text: "End process tree";
+                    activated => {
+                        root.process-menu(ProcessAction.end-tree, -1);
+                    }
+                }
+
+                MenuEntry {
+                    text: root.menu-suspended ? "Resume" : "Suspend";
+                    activated => {
+                        root.process-menu(root.menu-suspended ? ProcessAction.resume : ProcessAction.suspend, -1);
+                    }
+                }
+
+                MenuDivider { }
+
+                Text {
+                    height: 22px;
+                    x: 10px;
+                    text: "Priority";
+                    font-size: 11px;
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                }
+
+                for label[i] in ["Realtime", "High", "Above normal", "Normal", "Below normal", "Idle"]: MenuEntry {
+                    text: label;
+                    indent: true;
+                    activated => {
+                        root.process-menu(ProcessAction.priority, 5 - i);
+                    }
+                }
+
+                MenuEntry {
+                    text: "Set affinity…";
+                    activated => {
+                        root.process-menu(ProcessAction.affinity, -1);
+                    }
+                }
+
+                MenuDivider { }
+
+                MenuEntry {
+                    text: "Create dump file";
+                    activated => {
+                        root.process-menu(ProcessAction.dump, -1);
+                    }
+                }
+            }
+        }
+    }
+
+    view-menu := PopupWindow {
+        x: root.width - 314px;
+        y: 60px;
+        width: 300px;
+        height: root.page == 0 ? 500px : root.page == 1 ? 170px + root.graph-toggles.length * 28px : 150px;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+
+        Rectangle {
+            border-radius: 8px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000040;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+
+                Text {
+                    text: "Theme";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+
+                    Button {
+                        text: "Light";
+                        primary: root.theme-index == 0;
+                        clicked => {
+                            root.theme-chosen(0);
+                        }
+                    }
+
+                    Button {
+                        text: "Dark";
+                        primary: root.theme-index == 1;
+                        clicked => {
+                            root.theme-chosen(1);
+                        }
+                    }
+
+                    Button {
+                        text: "System";
+                        primary: root.theme-index == 2;
+                        clicked => {
+                            root.theme-chosen(2);
+                        }
+                    }
+                }
+
+                // Performance: the selected device's graphs.
+                if root.page == 1: Text {
+                    text: root.graph-toggles.length > 0 ? "Graphs: " + root.device-title : "No graphs for this device";
+                    font-weight: 600;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+
+                if root.page == 1: VerticalLayout {
+                    spacing: 2px;
+
+                    for toggle[i] in root.graph-toggles: CheckBox {
+                        text: toggle.title;
+                        checked: toggle.shown;
+                        toggled => {
+                            root.graph-toggled(i, self.checked);
+                        }
+                    }
+                }
+
+                if root.page == 1 && root.graph-toggles.length > 0: Text {
+                    text: "Hide them all to see the figures large.";
+                    font-size: 11px;
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+
+                // Processes: tree mode, columns and the highlight legend.
+                if root.page == 0: CheckBox {
+                    text: "Show as tree";
+                    checked <=> root.tree-mode;
+                    toggled => {
+                        root.tree-toggled(self.checked);
+                    }
+                }
+
+                if root.page == 0: Text {
+                    text: "Columns";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+
+                if root.page == 0: GridLayout {
+                    spacing: 2px;
+
+                    Row {
+                        CheckBox {
+                            text: "PID";
+                            checked <=> root.show-pid;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+
+                        CheckBox {
+                            text: "CPU";
+                            checked <=> root.show-cpu;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+                    }
+
+                    Row {
+                        CheckBox {
+                            text: "GPU";
+                            checked <=> root.show-gpu;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+
+                        CheckBox {
+                            text: "I/O total";
+                            checked <=> root.show-io;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+                    }
+
+                    Row {
+                        CheckBox {
+                            text: "Private bytes";
+                            checked <=> root.show-private;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+
+                        CheckBox {
+                            text: "Working set";
+                            checked <=> root.show-working-set;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+                    }
+
+                    Row {
+                        CheckBox {
+                            text: "GPU memory";
+                            checked <=> root.show-gpu-dedicated;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+
+                        CheckBox {
+                            text: "Shared GPU";
+                            checked <=> root.show-gpu-shared;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+                    }
+
+                    Row {
+                        CheckBox {
+                            text: "Threads";
+                            checked <=> root.show-threads;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+
+                        CheckBox {
+                            text: "Handles";
+                            checked <=> root.show-handles;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+                    }
+
+                    Row {
+                        CheckBox {
+                            text: "User name";
+                            checked <=> root.show-user;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+
+                        CheckBox {
+                            text: "Description";
+                            checked <=> root.show-description;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+                    }
+
+                    Row {
+                        CheckBox {
+                            text: "Verified signer";
+                            checked <=> root.show-signer;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+                    }
+                }
+
+                if root.page == 0: Text {
+                    text: "Highlighting";
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+
+                if root.page == 0: GridLayout {
+                    spacing-horizontal: 14px;
+                    spacing-vertical: 4px;
+
+                    Row {
+                        LegendItem {
+                            text: "Your processes";
+                            swatch: Theme.own-process;
+                        }
+
+                        LegendItem {
+                            text: "Elevated (yours)";
+                            swatch: Theme.elevated-process;
+                        }
+                    }
+
+                    Row {
+                        LegendItem {
+                            text: "Hosts services";
+                            swatch: Theme.service-process;
+                        }
+
+                        LegendItem {
+                            text: "System accounts";
+                            swatch: Theme.system-process;
+                        }
+                    }
+
+                    Row {
+                        LegendItem {
+                            text: "Just started";
+                            swatch: Theme.new-process;
+                        }
+
+                        LegendItem {
+                            text: "Just exited";
+                            swatch: Theme.exited-process;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+
+                    Button {
+                        text: "Run…";
+                        clicked => {
+                            view-menu.close();
+                            root.run-open = true;
+                        }
+                    }
+
+                    Button {
+                        text: "Find…";
+                        clicked => {
+                            view-menu.close();
+                            root.show-page(5);
+                        }
+                    }
+
+                    Button {
+                        text: "About";
+                        clicked => {
+                            view-menu.close();
+                            about.show();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    about := PopupWindow {
+        x: (root.width - 380px) / 2;
+        y: 80px;
+        width: 380px;
+        height: 330px;
+
+        Rectangle {
+            border-radius: 8px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 8px;
+
+                Text {
+                    text: "Ferrotop 0.5.0";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: Theme.accent;
+                }
+
+                Text {
+                    text: "A memory-safe process explorer for Windows, written in Rust. Its process provider, CPU accounting and NT structure layouts are ported from System Informer (MIT, Winsider Seminars & Solutions).";
+                    wrap: word-wrap;
+                    color: Theme.text;
+                }
+
+                AboutSlint {
+                    vertical-stretch: 1;
+                }
+            }
+        }
+    }
+}

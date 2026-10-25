@@ -1,0 +1,22 @@
+[package]
+name = "ferrotop"
+description = "A fast, memory-safe process explorer for Windows, written in Rust with a Slint UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[dependencies]
+ferrotop-core.workspace = true
+ferrotop-sys.workspace = true
+slint.workspace = true
+raw-window-handle.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+embed-resource.workspace = true
+
+[lints]
+workspace = true

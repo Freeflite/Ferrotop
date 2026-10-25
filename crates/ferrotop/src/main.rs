@@ -1,0 +1,861 @@
+//! Ferrotop: a memory-safe process explorer for Windows.
+// `deny` rather than `forbid`: the Slint-generated UI glue opts into `unsafe` internally.
+// Handwritten code in this crate can't.
+#![deny(unsafe_code)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod actions;
+mod pages;
+mod performance;
+mod tables;
+
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use ferrotop_core::details::{Account, file_key};
+use ferrotop_core::format;
+use ferrotop_core::perf::PerformanceProvider;
+use ferrotop_core::provider::{ProcessItem, ProcessKey, ProcessProvider, ProcessState, Sample, is_pseudo_process};
+use ferrotop_core::sampler::Sampler;
+use ferrotop_core::settings::{CpuGraph, Page, Settings, ThemeMode};
+use ferrotop_core::tree::{self, Row, SortColumn, SortOrder, ViewOptions};
+use ferrotop_sys::window::{Rgb, TitleBarStyle};
+use performance::Device;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+
+slint::include_modules!();
+
+const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+/// Refreshes a status-bar message stays up.
+const MESSAGE_REFRESHES: u8 = 6;
+/// UI page numbers past the four tabs.
+const PROPERTIES_PAGE: i32 = 4;
+const FIND_PAGE: i32 = 5;
+
+/// Sort columns in the order the UI numbers them (0 = unsorted).
+const UI_COLUMNS: [SortColumn; 15] = [
+    SortColumn::Natural,
+    SortColumn::Name,
+    SortColumn::Pid,
+    SortColumn::Cpu,
+    SortColumn::IoRate,
+    SortColumn::PrivateBytes,
+    SortColumn::WorkingSet,
+    SortColumn::Threads,
+    SortColumn::Handles,
+    SortColumn::User,
+    SortColumn::Description,
+    SortColumn::Gpu,
+    SortColumn::GpuDedicated,
+    SortColumn::GpuShared,
+    SortColumn::Signer,
+];
+
+/// The Performance page's list models, updated in place each refresh.
+#[derive(Default)]
+struct PerformanceModels {
+    devices: Rc<VecModel<DeviceTile>>,
+    big: Rc<VecModel<GraphData>>,
+    pairs: Rc<VecModel<GraphPair>>,
+    small: Rc<VecModel<GraphData>>,
+    top: Rc<VecModel<Stat>>,
+    bottom: Rc<VecModel<Stat>>,
+    sensors: Rc<VecModel<Stat>>,
+    info: Rc<VecModel<Stat>>,
+    cells: Rc<VecModel<GraphData>>,
+    cell_groups: Rc<VecModel<CellGroup>>,
+    toggles: Rc<VecModel<GraphToggle>>,
+}
+
+thread_local! {
+    /// App state, reachable from samples and background results posted to the UI thread.
+    static APP: RefCell<Option<Rc<RefCell<App>>>> = const { RefCell::new(None) };
+}
+
+struct App {
+    ui: slint::Weak<MainWindow>,
+    provider: ProcessProvider,
+    sampler: Option<Sampler>,
+    model: Rc<VecModel<ProcessRow>>,
+    rows: Vec<Row>,
+    collapsed: HashSet<ProcessKey>,
+    settings: Settings,
+    filter: String,
+    selected: Option<ProcessKey>,
+    /// The process whose path and command line are shown, so they're only queried once.
+    details_for: Option<ProcessKey>,
+    message_refreshes: u8,
+    perf: PerformanceProvider,
+    device: Device,
+    perf_models: PerformanceModels,
+    /// Process icons by image-file key, converted once.
+    icons: HashMap<String, slint::Image>,
+    /// The theme Windows reported last, to follow live changes in "System" mode.
+    system_dark: Option<bool>,
+    page: i32,
+    pages: pages::Pages,
+    actions: actions::Actions,
+}
+
+impl App {
+    fn new(ui: slint::Weak<MainWindow>, settings: Settings) -> Self {
+        let device = Device::parse(&settings.device).unwrap_or(Device::Cpu);
+        Self {
+            ui,
+            provider: ProcessProvider::new(),
+            sampler: None,
+            model: Rc::new(VecModel::default()),
+            rows: Vec::new(),
+            collapsed: HashSet::new(),
+            settings,
+            filter: String::new(),
+            selected: None,
+            details_for: None,
+            message_refreshes: 0,
+            perf: PerformanceProvider::new(),
+            device,
+            perf_models: PerformanceModels::default(),
+            icons: HashMap::new(),
+            system_dark: None,
+            page: 0,
+            pages: pages::Pages::default(),
+            actions: actions::Actions::default(),
+        }
+    }
+
+    fn apply_sample(&mut self, ui: &MainWindow, sample: ferrotop_sys::Result<Sample>) {
+        let sample = match sample {
+            Ok(sample) => sample,
+            Err(error) => return self.show_message(ui, format!("Refresh failed: {error}")),
+        };
+        let (perf, cpus, taken_at) = (sample.perf.clone(), sample.cpus.clone(), sample.taken_at);
+        self.provider.update(sample);
+        self.perf.update(&perf, self.provider.stats().cpu_usage, &cpus, taken_at);
+        self.convert_icons();
+        if self.selected.is_some_and(|key| self.provider.get(&key).is_none()) {
+            self.selected = None;
+        }
+        if self.message_refreshes > 0 {
+            self.message_refreshes -= 1;
+            if self.message_refreshes == 0 {
+                ui.set_status_message(SharedString::new());
+            }
+        }
+        self.follow_system_theme(ui);
+        self.rebuild_rows(ui);
+        self.update_system(ui);
+        self.update_details(ui);
+        if self.page == 1 {
+            self.update_performance(ui);
+        }
+        self.refresh_pages(ui);
+    }
+
+    /// Turns newly checked image files' icon pixels into UI images, once per file.
+    fn convert_icons(&mut self) {
+        for item in self.provider.items() {
+            let (Some(file), Some(path)) = (&item.file, item.details.as_ref().and_then(|d| d.image_path.as_deref()))
+            else {
+                continue;
+            };
+            let key = file_key(path);
+            if self.icons.contains_key(&key) {
+                continue;
+            }
+            let image = file.icon.as_ref().map_or_else(slint::Image::default, |icon| {
+                let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                    &icon.rgba,
+                    icon.width,
+                    icon.height,
+                );
+                slint::Image::from_rgba8(pixels)
+            });
+            self.icons.insert(key, image);
+        }
+        if self.icons.len() > 4096 {
+            self.icons.clear();
+        }
+    }
+
+    fn icon_for(&self, item: &ProcessItem) -> slint::Image {
+        item.details
+            .as_ref()
+            .and_then(|d| d.image_path.as_deref())
+            .and_then(|path| self.icons.get(&file_key(path)))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn update_performance(&mut self, ui: &MainWindow) {
+        let stats = *self.provider.stats();
+        let devices = performance::devices(&self.perf);
+        if !devices.contains(&self.device) {
+            self.device = Device::Cpu;
+        }
+        let tiles = devices.iter().map(|&device| performance::tile(&self.perf, &stats, device)).collect();
+        sync_model(&self.perf_models.devices, tiles);
+        ui.set_selected_device(devices.iter().position(|d| *d == self.device).unwrap_or(0) as i32);
+
+        let detail =
+            performance::detail(&self.perf, &stats, self.device, self.settings.cpu_graph, &self.settings.hidden_graphs);
+        ui.set_device_title(detail.title.into());
+        ui.set_device_model(detail.model.into());
+        let utilization_shown = detail.toggles.iter().any(|t| t.id == "cpu.utilization" && t.shown);
+        ui.set_show_cpu_graphs(self.device == Device::Cpu && utilization_shown);
+        ui.set_cpu_graph(CpuGraph::ALL.iter().position(|g| *g == self.settings.cpu_graph).unwrap_or(0) as i32);
+        ui.set_cells_title(detail.cells_title.into());
+        ui.set_cell_columns(detail.cell_columns);
+        ui.set_figures_only(detail.figures_only);
+        let models = &self.perf_models;
+        sync_model(&models.cells, detail.cells);
+        sync_model(&models.cell_groups, detail.cell_groups);
+        sync_model(&models.big, detail.big);
+        sync_model(&models.pairs, detail.pairs);
+        sync_model(&models.small, detail.small);
+        sync_model(&models.top, detail.top);
+        sync_model(&models.bottom, detail.bottom);
+        sync_model(&models.sensors, detail.sensors);
+        sync_model(&models.info, detail.info);
+        sync_model(&models.toggles, detail.toggles);
+    }
+
+    /// View menu: show or hide one of the selected device's graphs.
+    fn toggle_graph(&mut self, ui: &MainWindow, (index, shown): (i32, bool)) {
+        let Some(toggle) = usize::try_from(index).ok().and_then(|i| self.perf_models.toggles.row_data(i)) else {
+            return;
+        };
+        let id = toggle.id.to_string();
+        self.settings.hidden_graphs.retain(|hidden| *hidden != id);
+        if !shown {
+            self.settings.hidden_graphs.push(id);
+        }
+        self.update_performance(ui);
+        self.save_settings(ui);
+    }
+
+    fn choose_cpu_graph(&mut self, ui: &MainWindow, index: i32) {
+        if let Some(&graph) = usize::try_from(index).ok().and_then(|i| CpuGraph::ALL.get(i)) {
+            self.settings.cpu_graph = graph;
+            self.update_performance(ui);
+            self.save_settings(ui);
+        }
+    }
+
+    fn select_device(&mut self, ui: &MainWindow, index: i32) {
+        if let Some(device) = usize::try_from(index).ok().and_then(|i| performance::devices(&self.perf).get(i).copied())
+        {
+            self.device = device;
+            self.settings.device = device.id();
+            self.update_performance(ui);
+            self.save_settings(ui);
+        }
+    }
+
+    fn page_shown(&mut self, ui: &MainWindow, page: i32) {
+        self.page = page;
+        if let Some(&tab) = usize::try_from(page).ok().and_then(|i| Page::ALL.get(i)) {
+            self.settings.page = tab;
+            self.save_settings(ui);
+        }
+        match page {
+            1 => self.update_performance(ui),
+            2 => self.load_services(ui),
+            3 => self.load_network(ui),
+            _ => {}
+        }
+    }
+
+    fn show_message(&mut self, ui: &MainWindow, message: String) {
+        ui.set_status_message(message.into());
+        self.message_refreshes = MESSAGE_REFRESHES;
+    }
+
+    fn rebuild_rows(&mut self, ui: &MainWindow) {
+        let options = ViewOptions {
+            tree: self.settings.tree,
+            sort: self.settings.sort,
+            order: self.settings.order,
+            filter: &self.filter,
+            collapsed: &self.collapsed,
+        };
+        self.rows = tree::build_rows(self.provider.items(), &options);
+        let rows: Vec<ProcessRow> =
+            self.rows.iter().filter_map(|row| Some(self.ui_row(row, self.provider.get(&row.key)?))).collect();
+        sync_model(&self.model, rows);
+        let selected_index = self.selected.and_then(|key| self.rows.iter().position(|row| row.key == key));
+        ui.set_selected_index(selected_index.map_or(-1, |i| i as i32));
+        ui.set_sort_column(UI_COLUMNS.iter().position(|c| *c == self.settings.sort).unwrap_or(0) as i32);
+        ui.set_sort_ascending(self.settings.order == SortOrder::Ascending);
+    }
+
+    fn ui_row(&self, row: &Row, item: &ProcessItem) -> ProcessRow {
+        ProcessRow {
+            icon: self.icon_for(item),
+            name: item.name.as_str().into(),
+            pid: if is_pseudo_process(item.key.pid) { SharedString::new() } else { item.key.pid.to_string().into() },
+            cpu: format::cpu(item.cpu_usage).into(),
+            gpu: format::cpu((item.gpu.usage / 100.0) as f32).into(),
+            io_rate: format::rate(item.io_total_rate()).into(),
+            private_bytes: format::bytes(item.private_bytes).into(),
+            working_set: format::bytes(item.working_set).into(),
+            gpu_dedicated: format::bytes(item.gpu.dedicated).into(),
+            gpu_shared: format::bytes(item.gpu.shared).into(),
+            threads: format::count(u64::from(item.threads)).into(),
+            handles: format::count(u64::from(item.handles)).into(),
+            user: item.user().into(),
+            description: item.description().into(),
+            signer: item.signer().into(),
+            suspended: item.suspended,
+            depth: i32::from(row.depth),
+            has_children: row.has_children,
+            expanded: row.expanded,
+            selected: self.selected == Some(row.key),
+            highlight: highlight(item),
+        }
+    }
+
+    fn update_system(&self, ui: &MainWindow) {
+        let stats = self.provider.stats();
+        let total = stats.memory.total_physical;
+        let used = stats.memory_used();
+        let memory_share = if total == 0 { 0.0 } else { used as f64 / total as f64 * 100.0 };
+
+        ui.set_cpu_text(format!("{:.1}%", stats.cpu_usage * 100.0).into());
+        ui.set_memory_text(format!("{memory_share:.0}%").into());
+        // Graph paths are drawn in a 100x100 box that the UI stretches to fit.
+        let (line, fill) = self.provider.cpu_history().svg_paths(100.0, 100.0, 1.0);
+        ui.set_cpu_line(line.into());
+        ui.set_cpu_fill(fill.into());
+        let (line, fill) = self.provider.memory_history().svg_paths(100.0, 100.0, 1.0);
+        ui.set_memory_line(line.into());
+        ui.set_memory_fill(fill.into());
+
+        ui.set_status_cpu(
+            format!("CPU {:.1}% (kernel {:.1}%)", stats.cpu_usage * 100.0, stats.kernel_usage * 100.0).into(),
+        );
+        ui.set_status_memory(
+            format!(
+                "Memory {} / {}  ·  commit {} / {}",
+                format::bytes(used),
+                format::bytes(total),
+                format::bytes(stats.memory.commit_total),
+                format::bytes(stats.memory.commit_limit)
+            )
+            .into(),
+        );
+        ui.set_status_counts(
+            format!(
+                "{} processes · {} threads · {} handles",
+                format::count(stats.processes as u64),
+                format::count(stats.threads),
+                format::count(stats.handles)
+            )
+            .into(),
+        );
+    }
+
+    /// Parent as `name (pid)`, using the same creation-time rule as the tree.
+    fn parent_label(&self, item: &ProcessItem) -> String {
+        self.provider
+            .items()
+            .filter(|p| p.key.pid == item.parent_pid && p.key.pid != item.key.pid)
+            .filter(|p| p.key.pid == 4 || p.key.create_time <= item.key.create_time)
+            .max_by_key(|p| p.key.create_time)
+            .map_or_else(
+                || format!("non-existent process ({})", item.parent_pid),
+                |p| format!("{} ({})", p.name, p.key.pid),
+            )
+    }
+
+    fn update_details(&mut self, ui: &MainWindow) {
+        let Some(item) = self.selected.and_then(|key| self.provider.get(&key)) else {
+            ui.set_has_selection(false);
+            self.details_for = None;
+            return;
+        };
+        ui.set_has_selection(true);
+        ui.set_detail_name(item.name.as_str().into());
+
+        let parent = self.parent_label(item);
+        let started = match item.key.create_time {
+            0 => "at boot".to_owned(),
+            created => format!("{} ago", format::duration(seconds_since_filetime(created))),
+        };
+        let exited = if item.state == ProcessState::Removed { "  ·  exited" } else { "" };
+        let suspended = if item.suspended { "  ·  suspended" } else { "" };
+        let pid = if is_pseudo_process(item.key.pid) { "—".to_owned() } else { item.key.pid.to_string() };
+        ui.set_detail_summary(
+            format!(
+                "PID {pid}  ·  parent {parent}  ·  session {}  ·  priority {}  ·  started {started}{exited}{suspended}",
+                item.session_id, item.base_priority
+            )
+            .into(),
+        );
+
+        let details = item.details.as_deref();
+        let user = details.and_then(|d| d.user.as_deref()).map(|user| {
+            let elevated = if details.is_some_and(|d| d.elevated) { " (elevated)" } else { "" };
+            format!("{user}{elevated}")
+        });
+        let signer = item.file.as_ref().map(|f| match f.signer() {
+            signer if signer.starts_with('(') => signer,
+            signer => format!("signed by {signer}"),
+        });
+        let identity: Vec<String> =
+            [details.and_then(|d| d.description.clone()), details.and_then(|d| d.company.clone()), user, signer]
+                .into_iter()
+                .flatten()
+                .collect();
+        ui.set_detail_identity(identity.join("  ·  ").into());
+        ui.set_detail_services(item.services.join(", ").into());
+        let gpu = &item.gpu;
+        let gpu = if gpu.engine.is_empty() && gpu.dedicated == 0 && gpu.shared == 0 {
+            String::new()
+        } else {
+            format!(
+                "  ·  GPU {}%{}, memory {} dedicated, {} shared",
+                fallback(format::cpu((gpu.usage / 100.0) as f32), "0"),
+                if gpu.engine.is_empty() { String::new() } else { format!(" ({})", gpu.engine) },
+                fallback(format::bytes(gpu.dedicated), "0"),
+                fallback(format::bytes(gpu.shared), "0"),
+            )
+        };
+        ui.set_detail_usage(
+            format!(
+                "CPU {}% (kernel {}%, user {}%)  ·  private {}  ·  working set {}  ·  I/O read {} write {} other {}{gpu}",
+                fallback(format::cpu(item.cpu_usage), "0"),
+                fallback(format::cpu(item.kernel_usage), "0"),
+                fallback(format::cpu(item.user_usage), "0"),
+                fallback(format::bytes(item.private_bytes), "0"),
+                fallback(format::bytes(item.working_set), "0"),
+                fallback(format::rate(item.io_read_rate), "0"),
+                fallback(format::rate(item.io_write_rate), "0"),
+                fallback(format::rate(item.io_other_rate), "0"),
+            )
+            .into(),
+        );
+
+        if self.details_for != Some(item.key) {
+            self.details_for = Some(item.key);
+            let pid = item.key.pid;
+            let (path, command_line) = if pid == 0 || is_pseudo_process(pid) {
+                ("(kernel)".to_owned(), String::new())
+            } else if pid == 4 {
+                (details.and_then(|d| d.image_path.clone()).unwrap_or_default(), String::new())
+            } else {
+                let path = match details.and_then(|d| d.image_path.clone()) {
+                    Some(path) => path,
+                    None => describe(ferrotop_sys::process::image_path(pid)),
+                };
+                (path, describe(ferrotop_sys::process::command_line(pid)))
+            };
+            ui.set_detail_path(path.into());
+            ui.set_detail_command_line(command_line.into());
+        }
+    }
+
+    fn select_index(&mut self, ui: &MainWindow, index: i32) {
+        self.selected = usize::try_from(index).ok().and_then(|i| self.rows.get(i)).map(|row| row.key);
+        self.rebuild_rows(ui);
+        self.update_details(ui);
+    }
+
+    /// Selects the newest live process with this PID on the Processes page (from the Services,
+    /// Network or Find pages).
+    fn go_to_process(&mut self, ui: &MainWindow, pid: u32) {
+        let Some(key) = self
+            .provider
+            .items()
+            .filter(|item| item.key.pid == pid && item.state != ProcessState::Removed)
+            .max_by_key(|item| item.key.create_time)
+            .map(|item| item.key)
+        else {
+            return self.show_message(ui, format!("PID {pid} isn't running"));
+        };
+        // Expand its ancestors so a tree view shows it.
+        let mut parent = self.provider.get(&key).map(|item| (item.parent_pid, item.key.pid));
+        for _ in 0..64 {
+            let Some((parent_pid, child_pid)) = parent else { break };
+            if parent_pid == child_pid {
+                break;
+            }
+            let ancestor =
+                self.provider.items().filter(|item| item.key.pid == parent_pid).max_by_key(|i| i.key.create_time);
+            parent = ancestor.map(|a| (a.parent_pid, a.key.pid));
+            if let Some(ancestor) = ancestor {
+                self.collapsed.remove(&ancestor.key);
+            }
+        }
+        self.selected = Some(key);
+        self.switch_page(ui, 0);
+        self.rebuild_rows(ui);
+        self.update_details(ui);
+        if self.rows.iter().any(|row| row.key == key) {
+            ui.invoke_ensure_visible();
+        } else {
+            self.show_message(ui, format!("PID {pid} is hidden by the filter"));
+        }
+    }
+
+    fn move_selection(&mut self, ui: &MainWindow, step: i32) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let last = self.rows.len() as i32 - 1;
+        let current = self.selected.and_then(|key| self.rows.iter().position(|row| row.key == key));
+        let next = match current {
+            Some(i) => (i as i32 + step).clamp(0, last),
+            None => 0,
+        };
+        self.select_index(ui, next);
+    }
+
+    fn toggle_expand(&mut self, ui: &MainWindow, index: i32) {
+        if let Some(row) = usize::try_from(index).ok().and_then(|i| self.rows.get(i)) {
+            if !self.collapsed.remove(&row.key) {
+                self.collapsed.insert(row.key);
+            }
+            self.rebuild_rows(ui);
+        }
+    }
+
+    fn set_expanded(&mut self, ui: &MainWindow, expanded: bool) {
+        let Some(key) = self.selected else { return };
+        let changed = if expanded { self.collapsed.remove(&key) } else { self.collapsed.insert(key) };
+        if changed {
+            self.rebuild_rows(ui);
+        }
+    }
+
+    /// Header click: default order → reversed → unsorted, like System Informer.
+    fn sort_by(&mut self, ui: &MainWindow, column: i32) {
+        let Some(&column) = usize::try_from(column).ok().and_then(|i| UI_COLUMNS.get(i)) else { return };
+        let settings = &mut self.settings;
+        if column != settings.sort {
+            settings.sort = column;
+            settings.order = column.default_order();
+        } else if settings.order == column.default_order() {
+            settings.order = match settings.order {
+                SortOrder::Ascending => SortOrder::Descending,
+                SortOrder::Descending => SortOrder::Ascending,
+            };
+        } else {
+            settings.sort = SortColumn::Natural;
+            settings.order = SortOrder::Ascending;
+        }
+        self.rebuild_rows(ui);
+        self.save_settings(ui);
+    }
+
+    fn set_tree(&mut self, ui: &MainWindow, tree: bool) {
+        self.settings.tree = tree;
+        self.rebuild_rows(ui);
+        self.save_settings(ui);
+    }
+
+    fn choose_theme(&mut self, ui: &MainWindow, index: i32) {
+        self.settings.theme = ThemeMode::ALL.get(index as usize).copied().unwrap_or_default();
+        self.apply_theme(ui);
+        self.save_settings(ui);
+    }
+
+    fn apply_theme(&mut self, ui: &MainWindow) {
+        self.system_dark = ferrotop_sys::system::apps_use_light_theme().map(|light| !light);
+        let dark = match self.settings.theme {
+            ThemeMode::Light => false,
+            ThemeMode::Dark => true,
+            ThemeMode::System => self.system_dark == Some(true),
+        };
+        ui.global::<Theme>().set_dark(dark);
+        ui.set_dark_mode(dark);
+        ui.set_theme_index(ThemeMode::ALL.iter().position(|t| *t == self.settings.theme).unwrap_or(0) as i32);
+        style_title_bar(ui);
+    }
+
+    /// In "System" mode, follow Windows when the user switches between light and dark.
+    fn follow_system_theme(&mut self, ui: &MainWindow) {
+        if self.settings.theme == ThemeMode::System {
+            let now = ferrotop_sys::system::apps_use_light_theme().map(|light| !light);
+            if now != self.system_dark {
+                self.apply_theme(ui);
+            }
+        }
+    }
+
+    fn column_flags(ui: &MainWindow) -> [(SortColumn, bool); 13] {
+        [
+            (SortColumn::Pid, ui.get_show_pid()),
+            (SortColumn::Cpu, ui.get_show_cpu()),
+            (SortColumn::Gpu, ui.get_show_gpu()),
+            (SortColumn::IoRate, ui.get_show_io()),
+            (SortColumn::PrivateBytes, ui.get_show_private()),
+            (SortColumn::WorkingSet, ui.get_show_working_set()),
+            (SortColumn::GpuDedicated, ui.get_show_gpu_dedicated()),
+            (SortColumn::GpuShared, ui.get_show_gpu_shared()),
+            (SortColumn::Threads, ui.get_show_threads()),
+            (SortColumn::Handles, ui.get_show_handles()),
+            (SortColumn::User, ui.get_show_user()),
+            (SortColumn::Description, ui.get_show_description()),
+            (SortColumn::Signer, ui.get_show_signer()),
+        ]
+    }
+
+    fn apply_columns(&self, ui: &MainWindow) {
+        let shown = |column| self.settings.columns.contains(&column);
+        ui.set_show_pid(shown(SortColumn::Pid));
+        ui.set_show_cpu(shown(SortColumn::Cpu));
+        ui.set_show_gpu(shown(SortColumn::Gpu));
+        ui.set_show_io(shown(SortColumn::IoRate));
+        ui.set_show_private(shown(SortColumn::PrivateBytes));
+        ui.set_show_working_set(shown(SortColumn::WorkingSet));
+        ui.set_show_gpu_dedicated(shown(SortColumn::GpuDedicated));
+        ui.set_show_gpu_shared(shown(SortColumn::GpuShared));
+        ui.set_show_threads(shown(SortColumn::Threads));
+        ui.set_show_handles(shown(SortColumn::Handles));
+        ui.set_show_user(shown(SortColumn::User));
+        ui.set_show_description(shown(SortColumn::Description));
+        ui.set_show_signer(shown(SortColumn::Signer));
+    }
+
+    fn columns_changed(&mut self, ui: &MainWindow) {
+        self.settings.columns =
+            Self::column_flags(ui).into_iter().filter(|(_, shown)| *shown).map(|(column, _)| column).collect();
+        self.save_settings(ui);
+    }
+
+    fn save_settings(&mut self, ui: &MainWindow) {
+        let window = ui.window();
+        let size = window.size().to_logical(window.scale_factor());
+        if size.width >= 1.0 && size.height >= 1.0 {
+            self.settings.window = Some((size.width.round() as u32, size.height.round() as u32));
+        }
+        if let Err(error) = self.settings.save() {
+            self.show_message(ui, format!("Couldn't save settings: {error}"));
+        }
+    }
+
+    fn restart_elevated(&mut self, ui: &MainWindow) {
+        self.save_settings(ui);
+        match ferrotop_sys::system::relaunch_elevated() {
+            Ok(()) => {
+                let _ = slint::quit_event_loop();
+            }
+            Err(error) => self.show_message(ui, format!("Didn't restart as administrator: {error}")),
+        }
+    }
+
+    /// Process names by PID, for naming handle targets, connection owners and service hosts.
+    fn process_names(&self) -> HashMap<u32, String> {
+        self.provider
+            .items()
+            .filter(|item| item.state != ProcessState::Removed)
+            .map(|item| (item.key.pid, item.name.clone()))
+            .collect()
+    }
+}
+
+/// Runs `work` on a background thread, then `done` with its result on the UI thread.
+fn background<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    done: impl FnOnce(&mut App, &MainWindow, T) + Send + 'static,
+) {
+    let spawned = std::thread::Builder::new().name("ferrotop-worker".into()).spawn(move || {
+        let result = work();
+        let _ = slint::invoke_from_event_loop(move || with_app(|app, ui| done(app, ui, result)));
+    });
+    if spawned.is_err() {
+        // Called from inside an App method, so report through the window directly.
+        eprintln!("couldn't start a background task");
+    }
+}
+
+/// Runs `f` with the app and window, if both still exist. Only call from the UI thread, outside
+/// any other borrow of the app.
+fn with_app(f: impl FnOnce(&mut App, &MainWindow)) {
+    let Some(app) = APP.with(|cell| cell.borrow().clone()) else { return };
+    let Ok(mut app) = app.try_borrow_mut() else { return };
+    if let Some(ui) = app.ui.upgrade() {
+        f(&mut app, &ui);
+    }
+}
+
+/// Paints the native title bar (caption, text, buttons and border) in the current theme's
+/// toolbar colors so it blends into the app. Does nothing until the window exists.
+fn style_title_bar(ui: &MainWindow) {
+    let handle = ui.window().window_handle();
+    let Ok(RawWindowHandle::Win32(win32)) = handle.window_handle().map(|h| h.as_raw()) else { return };
+    let theme = ui.global::<Theme>();
+    let rgb = |color: slint::Color| Rgb(color.red(), color.green(), color.blue());
+    let style = TitleBarStyle {
+        dark: theme.get_dark(),
+        caption: rgb(theme.get_panel()),
+        text: rgb(theme.get_text()),
+        border: rgb(theme.get_border()),
+    };
+    // Older Windows versions without title-bar theming just keep the default look.
+    let _ = ferrotop_sys::window::style_title_bar(win32.hwnd, &style);
+}
+
+/// The row highlight, in System Informer's priority order. Matches `ProcessRow.highlight`.
+fn highlight(item: &ProcessItem) -> i32 {
+    let details = item.details.as_deref();
+    let account = details.map_or(Account::Unknown, |d| d.account);
+    match item.state {
+        ProcessState::New => 1,
+        ProcessState::Removed => 2,
+        _ if !item.services.is_empty() => 4,
+        _ if matches!(item.key.pid, 0 | 4) || is_pseudo_process(item.key.pid) || account == Account::System => 5,
+        _ if account == Account::Own && details.is_some_and(|d| d.elevated) => 6,
+        _ if account == Account::Own => 3,
+        _ => 0,
+    }
+}
+
+/// Updates the model in place so the list keeps its scroll position and only changed rows redraw.
+fn sync_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
+    let len = rows.len();
+    for (index, row) in rows.into_iter().enumerate() {
+        if index >= model.row_count() {
+            model.push(row);
+        } else if model.row_data(index).as_ref() != Some(&row) {
+            model.set_row_data(index, row);
+        }
+    }
+    while model.row_count() > len {
+        model.remove(model.row_count() - 1);
+    }
+}
+
+fn describe(result: ferrotop_sys::Result<String>) -> String {
+    match result {
+        Ok(text) => text,
+        Err(error) if error.is_access_denied() => "Access denied (run Ferrotop as administrator)".to_owned(),
+        Err(error) => error.to_string(),
+    }
+}
+
+fn fallback(text: String, empty: &str) -> String {
+    if text.is_empty() { empty.to_owned() } else { text }
+}
+
+/// Seconds between a FILETIME (100 ns ticks since 1601) and now.
+fn seconds_since_filetime(filetime: i64) -> u64 {
+    const UNIX_EPOCH_AS_FILETIME: i64 = 116_444_736_000_000_000;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() / 100) as i64;
+    u64::try_from((now + UNIX_EPOCH_AS_FILETIME - filetime) / 10_000_000).unwrap_or(0)
+}
+
+/// Runs on the UI thread with a sample posted by the sampler thread.
+fn deliver(sample: ferrotop_sys::Result<Sample>) {
+    with_app(|app, ui| app.apply_sample(ui, sample));
+}
+
+/// Wraps an `App` method as a Slint callback that holds only weak references to the window.
+fn handler<A: 'static>(
+    ui: &MainWindow,
+    app: &Rc<RefCell<App>>,
+    action: impl Fn(&mut App, &MainWindow, A) + 'static,
+) -> impl Fn(A) + 'static {
+    let ui = ui.as_weak();
+    let app = Rc::clone(app);
+    move |arg| {
+        if let Some(ui) = ui.upgrade()
+            && let Ok(mut app) = app.try_borrow_mut()
+        {
+            action(&mut app, &ui, arg);
+        }
+    }
+}
+
+fn main() -> Result<(), slint::PlatformError> {
+    // Before anything else loads a DLL: System32-only search, no remote or low-integrity images,
+    // no legacy injection points.
+    let _ = ferrotop_sys::control::harden_process();
+    let settings = Settings::load();
+    let elevated = ferrotop_sys::system::is_elevated();
+    let debug_privilege = elevated && ferrotop_sys::system::enable_debug_privilege().is_ok();
+
+    let ui = MainWindow::new()?;
+    if let Some((width, height)) = settings.window {
+        ui.window().set_size(slint::LogicalSize::new(width as f32, height as f32));
+    }
+    ui.set_elevated(elevated);
+    ui.set_tree_mode(settings.tree);
+    let lhm_port = settings.lhm_port;
+    let start_page = settings.page.index();
+    let app = Rc::new(RefCell::new(App::new(ui.as_weak(), settings)));
+    {
+        let mut app = app.borrow_mut();
+        ui.set_rows(ModelRc::from(Rc::clone(&app.model)));
+        let models = &app.perf_models;
+        ui.set_devices(ModelRc::from(Rc::clone(&models.devices)));
+        ui.set_big_graphs(ModelRc::from(Rc::clone(&models.big)));
+        ui.set_graph_pairs(ModelRc::from(Rc::clone(&models.pairs)));
+        ui.set_small_graphs(ModelRc::from(Rc::clone(&models.small)));
+        ui.set_stats_top(ModelRc::from(Rc::clone(&models.top)));
+        ui.set_stats_bottom(ModelRc::from(Rc::clone(&models.bottom)));
+        ui.set_stats_sensors(ModelRc::from(Rc::clone(&models.sensors)));
+        ui.set_device_info(ModelRc::from(Rc::clone(&models.info)));
+        ui.set_cpu_cells(ModelRc::from(Rc::clone(&models.cells)));
+        ui.set_cpu_cell_groups(ModelRc::from(Rc::clone(&models.cell_groups)));
+        ui.set_graph_toggles(ModelRc::from(Rc::clone(&models.toggles)));
+        app.pages.bind(&ui);
+        app.actions.bind(&ui);
+        app.apply_theme(&ui);
+        app.apply_columns(&ui);
+        if elevated && !debug_privilege {
+            app.show_message(&ui, "Running elevated, but SeDebugPrivilege couldn't be enabled".into());
+        }
+    }
+    APP.with(|cell| *cell.borrow_mut() = Some(Rc::clone(&app)));
+
+    let sampler = Sampler::spawn(REFRESH_INTERVAL, lhm_port, |sample| {
+        // On the sampler thread: hand the sample to the UI thread.
+        let _ = slint::invoke_from_event_loop(move || deliver(sample));
+    })
+    .map_err(|error| slint::PlatformError::Other(format!("couldn't start the sampler thread: {error}")))?;
+    app.borrow_mut().sampler = Some(sampler);
+
+    ui.on_row_clicked(handler(&ui, &app, App::select_index));
+    ui.on_row_activated(handler(&ui, &app, App::open_properties_at));
+    ui.on_select_device(handler(&ui, &app, App::select_device));
+    ui.on_cpu_graph_chosen(handler(&ui, &app, App::choose_cpu_graph));
+    ui.on_page_shown(handler(&ui, &app, App::page_shown));
+    ui.on_move_selection(handler(&ui, &app, App::move_selection));
+    ui.on_toggle_expand(handler(&ui, &app, App::toggle_expand));
+    ui.on_set_expanded(handler(&ui, &app, App::set_expanded));
+    ui.on_sort_by(handler(&ui, &app, App::sort_by));
+    ui.on_tree_toggled(handler(&ui, &app, App::set_tree));
+    ui.on_theme_chosen(handler(&ui, &app, App::choose_theme));
+    let toggle = handler(&ui, &app, App::toggle_graph);
+    ui.on_graph_toggled(move |index, shown| toggle((index, shown)));
+    ui.on_filter_changed(handler(&ui, &app, |app, ui, text: SharedString| {
+        app.filter = text.to_string();
+        app.rebuild_rows(ui);
+    }));
+    let columns = handler(&ui, &app, |app, ui, ()| app.columns_changed(ui));
+    ui.on_columns_changed(move || columns(()));
+    let restart = handler(&ui, &app, |app, ui, ()| app.restart_elevated(ui));
+    ui.on_restart_elevated(move || restart(()));
+    pages::connect(&ui, &app);
+    actions::connect(&ui, &app);
+    let save = handler(&ui, &app, |app, ui, ()| app.save_settings(ui));
+    ui.window().on_close_requested(move || {
+        save(());
+        slint::CloseRequestResponse::HideWindow
+    });
+
+    // Show first: the native window (and so the title bar) only exists once it's shown.
+    ui.show()?;
+    style_title_bar(&ui);
+    ui.invoke_show_page(start_page);
+    let result = slint::run_event_loop();
+    let _ = ui.hide();
+    // Stop the sampler thread (dropping it joins) before the process exits.
+    APP.with(|cell| cell.borrow_mut().take());
+    app.borrow_mut().sampler.take();
+    result
+}

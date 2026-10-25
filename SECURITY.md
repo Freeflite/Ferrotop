@@ -1,0 +1,52 @@
+# Security
+
+Ferrotop often runs as Administrator and reads other processes' memory, handles and tokens, so
+security problems in it matter. Thank you for taking the time to report one.
+
+## Reporting a vulnerability
+
+Please report privately through GitHub: open the repository's **Security** tab and choose
+**Report a vulnerability**. Don't open a public issue for anything exploitable.
+
+Include the Ferrotop version (About box), your Windows version, and steps or a proof of concept.
+You'll get an acknowledgement, and a fix or a decision will be published as a GitHub security
+advisory. Credit is given unless you'd rather not be named.
+
+## Supported versions
+
+Only the latest release gets security fixes.
+
+## What Ferrotop does and doesn't do
+
+- **No kernel driver of its own.** Everything runs in user mode. CPU temperatures can optionally
+  come from the separately installed [PawnIO](https://pawnio.eu) driver, through two official,
+  signed modules whose compiled code was checked byte-for-byte against their published source
+  (see `crates/ferrotop-sys/modules/pawnio/README.md`). Ferrotop only calls their read functions.
+- **No network access**, except an optional request to LibreHardwareMonitor's web server on
+  `127.0.0.1` for CPU temperatures. No telemetry, no update checks, no symbol downloads (stack
+  walking runs dbghelp in secure mode with a local-only search path).
+- **Reads, doesn't write, other processes,** except for actions you confirm: end, suspend and
+  resume, priority, affinity, service start and stop, and dump files. Each action re-checks the
+  process's creation time on the handle it acts through, so a recycled PID can't redirect it.
+  Critical processes (which would crash Windows) can't be ended or suspended.
+- **Files it writes:** `%APPDATA%\Ferrotop\settings.ini`, and dump files you ask for in
+  `%LOCALAPPDATA%\Ferrotop\Dumps`. Dumps contain the process's memory, which can include
+  passwords and keys, so they stay in your profile.
+
+## Hardening
+
+- All `unsafe` code lives in one crate (`ferrotop-sys`); every block is a single operation with a
+  written safety argument, enforced by clippy. The other crates forbid or deny `unsafe`.
+- Every buffer the kernel, firmware or another process supplies is bounds-checked before use, and
+  the parsers are mutation-tested on every test run (and fuzzed with cargo-fuzz, and run under
+  Miri, in CI).
+- DLLs load from System32 only, both for the exe's imports (`/DEPENDENTLOADFLAG`) and at run time
+  (`SetDefaultDllDirectories`); images from remote shares or low-integrity files are refused, and
+  legacy injection points (AppInit DLLs, global hooks) are disabled.
+- Release builds use Control Flow Guard, CET shadow-stack compatibility, ASLR and DEP, and the
+  release script checks the exe's headers for all of them.
+- Dependencies are checked against the RustSec advisory database and a license allowlist
+  (`cargo deny`) on every push; only crates.io sources are allowed.
+- Release builds are reproducible from a pinned toolchain, contain no build-machine paths, and
+  come with a signed GitHub build-provenance attestation. Verify a download with
+  `gh attestation verify ferrotop.exe --repo Freeflite/Ferrotop`.

@@ -1,0 +1,276 @@
+import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { HeaderCell } from "widgets.slint";
+
+// A column of a generic table. `x` is its left edge; the last column stretches to fill.
+export struct TableColumn {
+    title: string,
+    x: length,
+    width: length,
+    numeric: bool,
+}
+
+// Tones: 0 plain, 1 good, 2 muted, 3 warning.
+export struct TableRowData {
+    cells: [string],
+    tone: int,
+    selected: bool,
+}
+
+component TableRowView inherits Rectangle {
+    in property <TableRowData> item;
+    in property <[TableColumn]> columns;
+    in property <length> row-width;
+    callback clicked;
+    callback activated;
+
+    width: root.row-width;
+    height: Theme.row-height;
+    background: root.item.selected ? Theme.selection
+        : root.item.tone == 3 ? Theme.warning-row
+        : touch.has-hover ? Theme.hover : transparent;
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+        double-clicked => {
+            root.activated();
+        }
+    }
+
+    if root.item.selected: Rectangle {
+        x: 0;
+        width: 3px;
+        height: parent.height;
+        background: Theme.accent-cool;
+    }
+
+    for column[i] in root.columns: Rectangle {
+        x: column.x;
+        width: i == root.columns.length - 1 ? max(column.width, root.row-width - column.x) : column.width;
+        height: parent.height;
+        clip: true;
+
+        Text {
+            x: 6px;
+            width: max(0px, parent.width - 12px);
+            height: parent.height;
+            text: root.item.cells[i];
+            color: root.item.tone == 2 ? Theme.muted : root.item.tone == 1 ? Theme.good : Theme.text;
+            vertical-alignment: center;
+            horizontal-alignment: column.numeric ? TextHorizontalAlignment.right : TextHorizontalAlignment.left;
+            overflow: elide;
+        }
+    }
+}
+
+// A sortable, keyboard-navigable table. Rust owns the rows (already filtered and sorted) and
+// tells it which column is sorted and which row is selected.
+export component DataTable inherits Rectangle {
+    in property <[TableColumn]> columns;
+    in property <[TableRowData]> rows;
+    in property <length> content-width;
+    in property <int> sort-column: -1;
+    in property <bool> sort-ascending;
+    in property <int> selected-index: -1;
+    in property <string> empty-text;
+    callback sort-by(int);
+    callback row-clicked(int);
+    callback row-activated(int);
+    callback move-selection(int);
+
+    property <length> row-width: max(root.content-width, list.visible-width);
+
+    public function focus-table() {
+        keys.focus();
+    }
+
+    public function ensure-visible() {
+        if (root.selected-index < 0) {
+            return;
+        }
+        if (root.selected-index * Theme.row-height < -list.content-y) {
+            list.content-y = -(root.selected-index * Theme.row-height);
+        } else if ((root.selected-index + 1) * Theme.row-height > -list.content-y + list.visible-height) {
+            list.content-y = -((root.selected-index + 1) * Theme.row-height - list.visible-height);
+        }
+    }
+
+    VerticalLayout {
+        // The header scrolls sideways with the rows.
+        Rectangle {
+            height: 28px;
+            background: Theme.panel;
+            clip: true;
+
+            Rectangle {
+                x: list.content-x;
+                width: root.row-width;
+
+                for column[i] in root.columns: HeaderCell {
+                    x: column.x;
+                    width: i == root.columns.length - 1 ? max(column.width, root.row-width - column.x) : column.width;
+                    text: column.title;
+                    align-right: column.numeric;
+                    sorted: i == root.sort-column;
+                    ascending: root.sort-ascending;
+                    clicked => {
+                        root.sort-by(i);
+                    }
+                }
+            }
+
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.border;
+            }
+        }
+
+        keys := FocusScope {
+            vertical-stretch: 1;
+
+            key-pressed(event) => {
+                if (event.text == Key.UpArrow) {
+                    root.move-selection(-1);
+                    root.ensure-visible();
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    root.move-selection(1);
+                    root.ensure-visible();
+                    return accept;
+                }
+                if (event.text == Key.PageUp) {
+                    root.move-selection(-20);
+                    root.ensure-visible();
+                    return accept;
+                }
+                if (event.text == Key.PageDown) {
+                    root.move-selection(20);
+                    root.ensure-visible();
+                    return accept;
+                }
+                if (event.text == Key.Return && root.selected-index >= 0) {
+                    root.row-activated(root.selected-index);
+                    return accept;
+                }
+                reject
+            }
+
+            list := ListView {
+                width: parent.width;
+                height: parent.height;
+                // Wider than the window: scroll sideways (repeated rows don't size the viewport).
+                content-width: root.content-width;
+
+                for row[index] in root.rows: TableRowView {
+                    item: row;
+                    columns: root.columns;
+                    row-width: root.row-width;
+                    clicked => {
+                        keys.focus();
+                        root.row-clicked(index);
+                    }
+                    activated => {
+                        root.row-activated(index);
+                    }
+                }
+            }
+
+            if root.rows.length == 0 && root.empty-text != "": Text {
+                x: 16px;
+                y: 16px;
+                width: parent.width - 32px;
+                text: root.empty-text;
+                color: Theme.muted;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// A table with a filter box, action buttons that act on the selected row, and a status line.
+export component TablePanel inherits VerticalLayout {
+    in property <[TableColumn]> columns;
+    in property <[TableRowData]> rows;
+    in property <length> content-width;
+    in property <int> sort-column: -1;
+    in property <bool> sort-ascending;
+    in property <int> selected-index: -1;
+    in property <string> empty-text;
+    in property <string> status;
+    // Button labels; buttons are enabled only while a row is selected.
+    in property <[string]> actions;
+    in property <string> filter-placeholder: "Filter";
+    callback filter-changed(string);
+    callback sort-by(int);
+    callback row-clicked(int);
+    callback row-activated(int);
+    callback move-selection(int);
+    callback action(int);
+
+    public function focus-table() {
+        table.focus-table();
+    }
+
+    spacing: 6px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        padding-left: 12px;
+        padding-right: 12px;
+
+        LineEdit {
+            width: 240px;
+            placeholder-text: root.filter-placeholder;
+            edited(text) => {
+                root.filter-changed(text);
+            }
+            accepted => {
+                table.focus-table();
+            }
+        }
+
+        for label[i] in root.actions: Button {
+            text: label;
+            enabled: root.selected-index >= 0;
+            clicked => {
+                root.action(i);
+            }
+        }
+
+        Text {
+            text: root.status;
+            color: Theme.muted;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+    }
+
+    table := DataTable {
+        vertical-stretch: 1;
+        columns: root.columns;
+        rows: root.rows;
+        content-width: root.content-width;
+        sort-column: root.sort-column;
+        sort-ascending: root.sort-ascending;
+        selected-index: root.selected-index;
+        empty-text: root.empty-text;
+        sort-by(column) => {
+            root.sort-by(column);
+        }
+        row-clicked(index) => {
+            root.row-clicked(index);
+        }
+        row-activated(index) => {
+            root.row-activated(index);
+        }
+        move-selection(step) => {
+            root.move-selection(step);
+        }
+    }
+}
