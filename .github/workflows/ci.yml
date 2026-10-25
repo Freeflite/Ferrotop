@@ -59,7 +59,9 @@ jobs:
       - run: rustup toolchain install nightly --profile minimal --component miri,rust-src
       - run: cargo +nightly miri setup
       # Only tests that don't call into Windows (Miri can't execute foreign functions).
-      - run: cargo +nightly miri test -p ferrotop-sys --lib -- buffer:: never_panic rejects_counts decodes_ parses_ maps_ requests_ ioctl_
+      - name: Run the pure tests under Miri
+        run: |
+          cargo +nightly miri test -p ferrotop-sys --lib -- buffer:: never_panic rejects_counts decodes_ parses_ maps_ requests_ ioctl_
         env:
           MIRIFLAGS: -Zmiri-strict-provenance
 
