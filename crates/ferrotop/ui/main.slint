@@ -75,6 +75,8 @@ export component MainWindow inherits Window {
     in property <[HeaderTile]> header-tiles;
     property <int> header-drag-from: -1;
     property <int> header-drag-to: -1;
+    // How far the dragged one has moved.
+    property <length> header-drag-x;
     // Toggled when Windows needs the window repainted: the invisible cover below changes, so the
     // whole window is drawn again (the renderer otherwise redraws only what changed).
     in property <bool> repaint-all;
@@ -490,50 +492,68 @@ export component MainWindow inherits Window {
                         width: 4px;
                     }
 
-                    // Drag one sideways to move it; right-click to choose them.
-                    for tile[index] in root.header-tiles: Graph {
-                        label: tile.label;
-                        value: tile.value;
-                        line-commands: tile.line;
-                        fill-commands: tile.fill;
-                        tint: Theme.device-color(tile.kind);
+                    // Drag one sideways to move it: it follows the pointer and the others slide aside
+                    // to make room. Right-click to choose them.
+                    for tile[index] in root.header-tiles: slot := Rectangle {
+                        // One place along the row: a graph's width and the row's spacing.
+                        property <length> step: self.width + 10px;
+
                         min-width: 84px;
                         preferred-width: 120px;
                         max-width: 120px;
-                        opacity: root.header-drag-from == index ? 0.5 : 1;
+                        // The dragged graph passes over the others.
+                        z: root.header-drag-from == index ? 1 : 0;
 
-                        // Where the dragged graph would go: before this one, or after it.
-                        if root.header-drag-from >= 0 && root.header-drag-to == index && index != root.header-drag-from: Rectangle {
-                            x: root.header-drag-to < root.header-drag-from ? 0 : parent.width - 3px;
-                            width: 3px;
+                        Graph {
+                            x: root.header-drag-from == index ? root.header-drag-x
+                                : root.header-drag-from < 0 ? 0px
+                                : root.header-drag-from < index && index <= root.header-drag-to ? -parent.step
+                                : root.header-drag-to <= index && index < root.header-drag-from ? parent.step
+                                : 0px;
+                            width: parent.width;
                             height: parent.height;
-                            background: Theme.accent-cool;
-                        }
-
-                        TouchArea {
-                            property <length> start-x;
-
-                            mouse-cursor: root.header-drag-from == index ? MouseCursor.grabbing : MouseCursor.grab;
-                            pointer-event(event) => {
-                                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
-                                    self.start-x = self.absolute-position.x + self.mouse-x;
-                                }
-                                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
-                                    if (root.header-drag-from == index && root.header-drag-to != index) {
-                                        root.header-graph-moved(index, root.header-drag-to);
-                                    }
-                                    root.header-drag-from = -1;
-                                    root.header-drag-to = -1;
-                                }
-                                if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
-                                    root.open-picker(1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                                }
+                            label: tile.label;
+                            value: tile.value;
+                            line-commands: tile.line;
+                            fill-commands: tile.fill;
+                            tint: Theme.device-color(tile.kind);
+                            border-color: root.header-drag-from == index ? Theme.device-color(tile.kind) : Theme.border;
+                            drop-shadow-blur: root.header-drag-from == index ? 10px : 0px;
+                            drop-shadow-color: #00000070;
+                            // The others slide; the dragged one stays under the pointer, and
+                            // everything lands at once when it's dropped.
+                            animate x {
+                                duration: root.header-drag-from >= 0 && root.header-drag-from != index ? 150ms : 0ms;
+                                easing: ease-out;
                             }
-                            moved => {
-                                // Graphs are as wide as this one, 10px apart.
-                                if (self.pressed && abs(self.absolute-position.x + self.mouse-x - self.start-x) > 6px) {
-                                    root.header-drag-from = index;
-                                    root.header-drag-to = max(0, min(root.header-tiles.length - 1, index + round((self.absolute-position.x + self.mouse-x - self.start-x) / (parent.width + 10px))));
+
+                            TouchArea {
+                                property <length> start-x;
+
+                                mouse-cursor: root.header-drag-from == index ? MouseCursor.grabbing : MouseCursor.grab;
+                                pointer-event(event) => {
+                                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                        self.start-x = self.absolute-position.x + self.mouse-x;
+                                    }
+                                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+                                        if (root.header-drag-from == index && root.header-drag-to != index) {
+                                            root.header-graph-moved(index, root.header-drag-to);
+                                        }
+                                        root.header-drag-from = -1;
+                                        root.header-drag-to = -1;
+                                        root.header-drag-x = 0;
+                                    }
+                                    if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
+                                        root.open-picker(1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                    }
+                                }
+                                moved => {
+                                    // From where the pointer went down, whichever way the graph has moved since.
+                                    if (self.pressed && (root.header-drag-from == index || abs(self.absolute-position.x + self.mouse-x - self.start-x) > 6px)) {
+                                        root.header-drag-x = self.absolute-position.x + self.mouse-x - self.start-x;
+                                        root.header-drag-from = index;
+                                        root.header-drag-to = max(0, min(root.header-tiles.length - 1, index + round(root.header-drag-x / slot.step)));
+                                    }
                                 }
                             }
                         }
