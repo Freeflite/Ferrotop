@@ -294,9 +294,12 @@ impl CpuThermal {
                 let tjmax = *tjmax;
                 let package =
                     read("ioctl_read_msr", MSR_IA32_PACKAGE_THERM_STATUS).and_then(|s| decode_intel(s, tjmax));
-                let cores = pinned_reads(cores, || {
+                let cores: Vec<f32> = pinned_reads(cores, || {
                     read("ioctl_read_msr", MSR_IA32_THERM_STATUS).and_then(|s| decode_intel(s, tjmax))
-                });
+                })
+                .into_iter()
+                .flatten()
+                .collect();
                 (package.is_some() || !cores.is_empty()).then(|| CpuTemps {
                     package_c: package.or_else(|| cores.iter().copied().reduce(f32::max)),
                     cores,
@@ -308,15 +311,16 @@ impl CpuThermal {
 }
 
 /// The processor group and affinity mask for flat logical-processor index `index`.
-fn group_mask(bases: &[usize], index: usize) -> Option<(u16, usize)> {
+pub(crate) fn group_mask(bases: &[usize], index: usize) -> Option<(u16, usize)> {
     let group = bases.iter().rposition(|&base| base <= index)?;
     let bit = index - bases[group];
     (bit < usize::BITS as usize).then(|| (group as u16, 1usize << bit))
 }
 
-/// Runs `read` once on each of `cpus` by pinning this thread to it (MSRs are per core), then
-/// restores the thread's affinity.
-fn pinned_reads(cpus: &[(u16, usize)], read: impl Fn() -> Option<f32>) -> Vec<f32> {
+/// Runs `read` once on each of `cpus` by pinning this thread to it (MSRs and CPUID answer for
+/// the processor they run on), then restores the thread's affinity. `None` for a processor the
+/// thread couldn't be pinned to or whose read failed.
+pub(crate) fn pinned_reads<T>(cpus: &[(u16, usize)], read: impl Fn() -> Option<T>) -> Vec<Option<T>> {
     let affinity = |group: u16, mask: usize| GROUP_AFFINITY { Mask: mask, Group: group, Reserved: [0; 3] };
     let mut original = affinity(0, 0);
     let mut values = Vec::with_capacity(cpus.len());
@@ -328,15 +332,14 @@ fn pinned_reads(cpus: &[(u16, usize)], read: impl Fn() -> Option<f32>) -> Vec<f3
         // SAFETY: `this_thread` is the calling thread's pseudo-handle; both affinity pointers are valid.
         let ok = unsafe { SetThreadGroupAffinity(this_thread, &affinity(group, mask), &mut previous) };
         if ok == 0 {
+            values.push(None);
             continue;
         }
         if first {
             original = previous;
             first = false;
         }
-        if let Some(value) = read() {
-            values.push(value);
-        }
+        values.push(read());
     }
     if !first {
         // SAFETY: as above; this puts back the affinity the thread had before.

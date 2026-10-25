@@ -294,6 +294,17 @@ fn grid_columns(count: usize) -> i32 {
     }
 }
 
+/// How many CCDs `ccd_of_ccx` (each CCX's CCD, in CCX order) describes, if each CCD's CCXs sit
+/// together and every CCD has as many: the layout the CCD boxes need.
+fn uniform_ccds(ccd_of_ccx: &[u32]) -> Option<usize> {
+    let runs: Vec<&[u32]> = ccd_of_ccx.chunk_by(|a, b| a == b).collect();
+    let mut ccds: Vec<u32> = runs.iter().map(|run| run[0]).collect();
+    ccds.sort_unstable();
+    ccds.dedup();
+    let even = runs.windows(2).all(|pair| pair[0].len() == pair[1].len());
+    (!runs.is_empty() && ccds.len() == runs.len() && even).then_some(runs.len())
+}
+
 /// The CPU graph grid for the per-core, per-thread and per-CCX views.
 struct CellGrid {
     title: String,
@@ -349,11 +360,22 @@ fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
                     .collect()
             };
             let ccx_count = perf.l3_groups.len();
-            // CCDs come from the temperature sensors. Their slots can be sparse (a part with
-            // CCDs in alternate positions reports slots 0, 2, 4 and 6), so number them by
-            // position: the n-th CCD holds the n-th run of CCXs.
-            let ccds = temps.map_or(&[][..], |t| &t.ccds[..]);
-            let per_ccd = ccx_count.checked_div(ccds.len()).filter(|n| *n > 0 && ccx_count.is_multiple_of(ccds.len()));
+            // How many CCDs the CCXs make up, each holding the next run of CCXs. The CPU says on
+            // Zen to Zen 2, so the CCDs show without a temperature driver; otherwise there's one
+            // per CCD temperature sensor.
+            let sensors = temps.map_or(&[][..], |t| &t.ccds[..]);
+            let ccd_count = match uniform_ccds(&cpu.l3_ccds) {
+                Some(count) if count > 1 && cpu.l3_ccds.len() == ccx_count => count,
+                _ => sensors.len(),
+            };
+            let per_ccd = ccx_count.checked_div(ccd_count).filter(|n| *n > 0 && ccx_count.is_multiple_of(ccd_count));
+            // Sensor slots can be sparse (a part with CCDs in alternate positions reports slots
+            // 0, 2, 4 and 6), so the n-th sensor is the n-th CCD's. Only shown when every CCD
+            // has one.
+            let celsius = |n: usize| match sensors.get(n) {
+                Some((_, t)) if sensors.len() == ccd_count => format!(" · {t:.0} °C"),
+                _ => String::new(),
+            };
             match per_ccd {
                 // One CCX per CCD (Zen 3 and later): the CCX is the CCD, so say so on the cell.
                 Some(1) => grid(
@@ -362,8 +384,7 @@ fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
                         .iter()
                         .enumerate()
                         .map(|(i, history)| {
-                            let celsius = ccds.get(i).map(|(_, t)| format!(" · {t:.0} °C")).unwrap_or_default();
-                            cell(format!("CCD {} · cores {}{celsius}", i + 1, span(&cores_of(i))), history)
+                            cell(format!("CCD {} · cores {}{}", i + 1, span(&cores_of(i)), celsius(i)), history)
                         })
                         .collect(),
                 ),
@@ -377,14 +398,12 @@ fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
                         .collect();
                     // Whole CCDs per row, so a box never wraps.
                     let columns = (grid_columns(cells.len()) as usize / per_ccd).max(1) * per_ccd;
-                    let groups = ccds
-                        .iter()
-                        .enumerate()
-                        .map(|(n, (_, celsius))| {
+                    let groups = (0..ccd_count)
+                        .map(|n| {
                             let first = n * per_ccd;
                             let ccx_cores: Vec<usize> = (first..first + per_ccd).flat_map(cores_of).collect();
                             CellGroup {
-                                title: format!("CCD {} · cores {} · {celsius:.0} °C", n + 1, span(&ccx_cores)).into(),
+                                title: format!("CCD {} · cores {}{}", n + 1, span(&ccx_cores), celsius(n)).into(),
                                 column: (first % columns) as i32,
                                 row: (first / columns) as i32,
                                 columns: per_ccd as i32,
@@ -393,15 +412,14 @@ fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
                         .collect();
                     CellGrid {
                         title: format!(
-                            "Utilization per CCX (cores sharing an L3 cache), boxed by CCD: {} CCDs × {per_ccd} CCXs",
-                            ccds.len()
+                            "Utilization per CCX (cores sharing an L3 cache), boxed by CCD: {ccd_count} CCDs × {per_ccd} CCXs"
                         ),
                         cells,
                         columns: columns as i32,
                         groups,
                     }
                 }
-                // No CCD sensors (no PawnIO or not elevated): just the CCXs.
+                // CCDs unknown (a CPU that doesn't say, without PawnIO or not elevated): just the CCXs.
                 None => grid(
                     format!("Utilization per CCX: cores sharing an L3 cache ({ccx_count} groups)"),
                     perf.l3_groups
@@ -736,5 +754,21 @@ fn gpu_detail(perf: &PerformanceProvider, index: usize) -> Detail {
             )])
             .collect(),
         ..Detail::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ccds_must_be_even_runs_of_ccxs() {
+        assert_eq!(uniform_ccds(&[0, 0, 1, 1]), Some(2));
+        // Keys are opaque: the socket's bits ride above the CCD's.
+        assert_eq!(uniform_ccds(&[0, 0, 8, 8]), Some(2));
+        assert_eq!(uniform_ccds(&[5]), Some(1));
+        assert_eq!(uniform_ccds(&[0, 0, 1]), None, "uneven");
+        assert_eq!(uniform_ccds(&[0, 1, 0, 1]), None, "a CCD's CCXs apart");
+        assert_eq!(uniform_ccds(&[]), None);
     }
 }

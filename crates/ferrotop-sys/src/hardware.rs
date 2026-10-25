@@ -32,6 +32,9 @@ pub struct CpuInfo {
     /// Logical processors sharing each L3 cache. On AMD Zen that's a CCX (on Zen 3 and later,
     /// one CCD); on most Intel desktop chips, the whole package.
     pub l3_groups: Vec<Vec<usize>>,
+    /// The CCD each L3 group belongs to, as an opaque key, where the CPU says (see [`l3_ccds`]);
+    /// otherwise empty.
+    pub l3_ccds: Vec<u32>,
 }
 
 pub fn cpu_info() -> CpuInfo {
@@ -43,7 +46,46 @@ pub fn cpu_info() -> CpuInfo {
     if let Ok(records) = logical_processor_records() {
         parse_topology(&records, &group_bases(), &mut info);
     }
+    info.l3_ccds = l3_ccds(&info.l3_groups);
     info
+}
+
+/// The CCD holding each L3 group (CCX) on AMD family 17h (Zen, Zen+ and Zen 2), whose CCDs (dies,
+/// on Zen and Zen+) hold up to two CCXs; empty for other CPUs. Windows doesn't report CCDs, but
+/// these chips number every logical processor's APIC ID the same way: thread in bit 0, core in
+/// bits 1–2, CCX in bit 3, then the CCD and socket. So a CCX's CCD is the APIC ID of one of its
+/// threads, read with CPUID while pinned to it, shifted right by 4. From Zen 3 on a CCD is
+/// usually a single CCX, which the L3 groups already show.
+#[cfg(target_arch = "x86_64")]
+fn l3_ccds(l3_groups: &[Vec<usize>]) -> Vec<u32> {
+    use std::arch::x86_64::{__cpuid, __get_cpuid_max};
+
+    use crate::cpu_temp::{self, Vendor};
+
+    const EXTENDED_FEATURES: u32 = 0x8000_0001;
+    const TOPOLOGY_EXTENSIONS: u32 = 1 << 22;
+    const EXTENDED_APIC_ID: u32 = 0x8000_001E;
+    let Some(id) = cpu_temp::cpu_id() else { return Vec::new() };
+    if id.vendor != Vendor::Amd || id.family != 0x17 || __get_cpuid_max(0x8000_0000).0 < EXTENDED_APIC_ID {
+        return Vec::new();
+    }
+    // Without topology extensions, leaf 0x8000_001E is reserved.
+    if __cpuid(EXTENDED_FEATURES).ecx & TOPOLOGY_EXTENSIONS == 0 {
+        return Vec::new();
+    }
+    let bases = group_bases();
+    let Some(cpus) =
+        l3_groups.iter().map(|threads| cpu_temp::group_mask(&bases, *threads.first()?)).collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
+    let apic_ids = cpu_temp::pinned_reads(&cpus, || Some(__cpuid(EXTENDED_APIC_ID).eax));
+    apic_ids.into_iter().map(|apic| apic.map(|id| id >> 4)).collect::<Option<Vec<_>>>().unwrap_or_default()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn l3_ccds(_: &[Vec<usize>]) -> Vec<u32> {
+    Vec::new()
 }
 
 /// Where each processor group's processors start in `processor_times()` order, which lists
@@ -309,6 +351,8 @@ mod tests {
         let mut shared: Vec<usize> = cpu.l3_groups.iter().flatten().copied().collect();
         shared.sort_unstable();
         assert_eq!(shared, (0..cpu.logical as usize).collect::<Vec<_>>(), "{:?}", cpu.l3_groups);
+        // CCDs, where the CPU reports them, are one per L3 group.
+        assert!(cpu.l3_ccds.is_empty() || cpu.l3_ccds.len() == cpu.l3_groups.len(), "{:?}", cpu.l3_ccds);
         let memory = memory_counters().expect("memory counters");
         assert!(memory.physical_total > 0 && memory.commit_total <= memory.commit_limit);
         assert!(installed_memory().unwrap_or(0) >= memory.physical_total);
