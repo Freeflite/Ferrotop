@@ -118,6 +118,7 @@ jobs:
           "data folder owner: $owner"
           if ($owner -notmatch 'Administrators|SYSTEM') { throw "the data folder is owned by $owner" }
           Start-Sleep -Seconds 15
+          Get-Content (Join-Path $data 'service-status.txt')
           & ./target/release/examples/history_check.exe
           if ($LASTEXITCODE -ne 0) { throw 'history check failed' }
           # An elevated window's own trace must leave the service's running.

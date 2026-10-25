@@ -27,8 +27,13 @@ use crate::service_host::SecurityDescriptor;
 use crate::{Error, Result};
 
 pub const SECTION_NAME: &str = r"Global\Ferrotop.Live";
-/// SYSTEM and Administrators full access; interactive users may only read.
-const SECTION_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;IU)";
+/// Owned by SYSTEM (stated outright: a SYSTEM process's objects can otherwise default to being
+/// owned by Administrators, and readers check the owner); SYSTEM and Administrators get full
+/// access, interactive users may only read.
+const SECTION_SDDL: &str = "O:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;IU)";
+/// The same access without the owner, which only SYSTEM may set: for tests.
+#[cfg(test)]
+const TEST_SECTION_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;IU)";
 const MAGIC: u32 = u32::from_le_bytes(*b"FTLV");
 const VERSION: u32 = 1;
 pub const MAX_PROCESSES: usize = 8192;
@@ -136,11 +141,11 @@ pub struct LivePublisher {
 impl LivePublisher {
     /// Creates the section. Needs `SeCreateGlobalPrivilege` (services have it).
     pub fn create() -> Result<Self> {
-        Self::create_named(SECTION_NAME)
+        Self::create_named(SECTION_NAME, SECTION_SDDL)
     }
 
-    fn create_named(section: &str) -> Result<Self> {
-        let descriptor = SecurityDescriptor::from_sddl(SECTION_SDDL)?;
+    fn create_named(section: &str, sddl: &str) -> Result<Self> {
+        let descriptor = SecurityDescriptor::from_sddl(sddl)?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
@@ -363,7 +368,7 @@ mod tests {
     fn a_reader_sees_what_was_published() {
         // A session-local name needs no privilege, unlike the service's global one.
         let name = format!(r"Local\Ferrotop.LiveTest.{}", std::process::id());
-        let publisher = LivePublisher::create_named(&name).expect("create");
+        let publisher = LivePublisher::create_named(&name, TEST_SECTION_SDDL).expect("create");
         let reader = LiveReader::open_named(&name, false).expect("open");
         assert_eq!(reader.read(), None, "nothing published yet");
         let snapshot = LiveSnapshot {

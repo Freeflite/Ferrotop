@@ -16,7 +16,13 @@ fn main() {
         drop(trace);
         println!("ran and stopped a window trace");
     }
-    let snapshot = LiveReader::open().ok().and_then(|reader| reader.read());
+    let snapshot = match LiveReader::open() {
+        Ok(reader) => reader.read(),
+        Err(error) => {
+            println!("live: can't open the section: {error}");
+            None
+        }
+    };
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
     match &snapshot {
         Some(live) => println!(

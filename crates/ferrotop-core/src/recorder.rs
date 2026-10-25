@@ -26,7 +26,9 @@ pub fn run(dir: &Path, mut wait: impl FnMut(Duration) -> bool) -> io::Result<()>
     // The service is the source of the live figures, never a reader of them.
     let tracer = ActivityTracer::start(TraceRole::Service);
     // Without the section, windows just don't get live figures; history still works.
-    let live = LivePublisher::create().ok();
+    let live = LivePublisher::create();
+    write_status(dir, &tracer, live.as_ref().err());
+    let live = live.ok();
     let mut processes = ProcessProvider::new();
     let mut collector = PerfCollector::new();
     // Temperatures come from PawnIO, which SYSTEM can read. Never from the service's own live
@@ -75,6 +77,21 @@ pub fn run(dir: &Path, mut wait: impl FnMut(Duration) -> bool) -> io::Result<()>
         let _ = writer.write_minute(&record);
     }
     Ok(())
+}
+
+/// Notes how the service started, for troubleshooting: `service-status.txt` in its folder.
+fn write_status(dir: &Path, tracer: &ActivityTracer, live_error: Option<&ferrotop_sys::Error>) {
+    let trace = match tracer.status() {
+        crate::activity::ActivityStatus::Running => "running".to_owned(),
+        other => format!("{other:?}"),
+    };
+    let live = live_error.map_or_else(|| "published".to_owned(), |error| format!("failed: {error}"));
+    let text = format!(
+        "Ferrotop history service {}\nstarted: {}\ndisk and network trace: {trace}\nlive figures: {live}\n",
+        env!("CARGO_PKG_VERSION"),
+        archive::now_unix(),
+    );
+    let _ = std::fs::write(dir.join("service-status.txt"), text);
 }
 
 fn second_record(
