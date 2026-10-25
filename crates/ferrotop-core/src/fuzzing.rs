@@ -11,3 +11,9 @@ pub fn json(data: &[u8]) {
 pub fn lhm_response(data: &[u8]) {
     crate::lhm::parse_response(data);
 }
+
+/// The history files the service writes: per-second records, then busiest-process minutes.
+pub fn archive(data: &[u8]) {
+    let _ = crate::archive::parse_seconds(data);
+    let _ = crate::archive::parse_minutes(data);
+}

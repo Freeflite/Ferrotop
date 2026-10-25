@@ -1,0 +1,83 @@
+import { Theme } from "theme.slint";
+import { MiniGraph } from "widgets.slint";
+
+// One graph of the History page; `kind` picks the device color (0 CPU ... 4 GPU).
+export struct HistoryGraph {
+    kind: int,
+    title: string,
+    corner: string,
+    line: string,
+    fill: string,
+}
+
+// A history graph: its title and figure, the graph (with gaps where nothing was recorded), and
+// the time axis.
+export component HistoryGraphView inherits VerticalLayout {
+    in property <HistoryGraph> data;
+    in property <string> axis-start;
+
+    spacing: 2px;
+
+    HorizontalLayout {
+        Text {
+            text: root.data.title;
+            font-size: 11px;
+            color: Theme.muted;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        Text {
+            text: root.data.corner;
+            font-size: 11px;
+            color: Theme.muted;
+        }
+    }
+
+    Rectangle {
+        min-height: 44px;
+        vertical-stretch: 1;
+        background: Theme.panel-raised;
+        border-width: 1px;
+        border-color: Theme.device-color(root.data.kind).with-alpha(0.6);
+        clip: true;
+
+        for i in 3: Rectangle {
+            x: 0;
+            y: (i + 1) * parent.height / 4;
+            width: parent.width;
+            height: 1px;
+            background: Theme.grid;
+        }
+        for i in 11: Rectangle {
+            x: (i + 1) * parent.width / 12;
+            y: 0;
+            width: 1px;
+            height: parent.height;
+            background: Theme.grid;
+        }
+
+        MiniGraph {
+            width: parent.width;
+            height: parent.height;
+            line-commands: root.data.line;
+            fill-commands: root.data.fill;
+            tint: Theme.device-color(root.data.kind);
+        }
+    }
+
+    HorizontalLayout {
+        Text {
+            text: root.axis-start;
+            font-size: 10px;
+            color: Theme.muted;
+            horizontal-stretch: 1;
+        }
+
+        Text {
+            text: "now";
+            font-size: 10px;
+            color: Theme.muted;
+        }
+    }
+}

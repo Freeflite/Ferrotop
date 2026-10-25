@@ -1,10 +1,19 @@
 //! Per-process disk and network activity, from the kernel's event trace (see
-//! [`ferrotop_sys::etw`]). Only available when Ferrotop runs as administrator.
+//! [`ferrotop_sys::etw`]) when Ferrotop runs as administrator, or else from the history
+//! service's live figures when the service is running.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferrotop_sys::etw::{self, IoTrace};
+use ferrotop_sys::live::{LiveReader, LiveSnapshot};
 use ferrotop_sys::process::ProcessInfo;
+
+/// How long to wait before looking for the service's live figures again.
+const LIVE_RETRY: Duration = Duration::from_secs(10);
+/// Figures older than this mean the service has stopped.
+const LIVE_STALE_MS: u64 = 3000;
 
 /// Whether per-process disk and network activity can be shown.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -15,6 +24,8 @@ pub enum ActivityStatus {
     /// session, say).
     Failed,
     Running,
+    /// From the history service, which traces on this process's behalf.
+    Service,
 }
 
 /// One process's bytes since the previous sample.
@@ -26,40 +37,97 @@ pub struct ProcessActivity {
     pub received: u64,
 }
 
+/// The history service's live figures, for a process that can't read them itself.
+#[derive(Debug, Default)]
+pub struct LiveSource {
+    reader: RefCell<Option<LiveReader>>,
+    retry_at: Cell<Option<Instant>>,
+}
+
+impl LiveSource {
+    /// The service's latest figures, if it's publishing.
+    pub fn latest(&self) -> Option<LiveSnapshot> {
+        let now = Instant::now();
+        if self.reader.borrow().is_none() {
+            if self.retry_at.get().is_some_and(|at| now < at) {
+                return None;
+            }
+            match LiveReader::open() {
+                Ok(reader) => *self.reader.borrow_mut() = Some(reader),
+                Err(_) => {
+                    self.retry_at.set(Some(now + LIVE_RETRY));
+                    return None;
+                }
+            }
+        }
+        let snapshot = self.reader.borrow().as_ref()?.read()?;
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        (now_ms.saturating_sub(snapshot.updated_unix_ms) < LIVE_STALE_MS).then_some(snapshot)
+    }
+}
+
 /// Owns the trace; lives on the process sampler thread.
 #[derive(Debug)]
 pub struct ActivityTracer {
     trace: Option<IoTrace>,
-    status: ActivityStatus,
-}
-
-impl Default for ActivityTracer {
-    fn default() -> Self {
-        Self::start()
-    }
+    status: Cell<ActivityStatus>,
+    /// The service's figures when there's no trace; `None` in the service itself.
+    live: Option<LiveSource>,
+    last_take: Cell<Option<Instant>>,
 }
 
 impl ActivityTracer {
-    /// Starts tracing if it can. Elevation doesn't change while a process runs, so there's no
-    /// point retrying later.
-    pub fn start() -> Self {
-        match IoTrace::start() {
-            Ok(trace) => Self { trace: Some(trace), status: ActivityStatus::Running },
-            Err(error) if etw::is_access_denied(&error) => Self { trace: None, status: ActivityStatus::NeedsAdmin },
-            Err(_) => Self { trace: None, status: ActivityStatus::Failed },
-        }
+    /// Starts tracing if it can, or else (with `use_service`) relies on the history service.
+    /// Elevation doesn't change while a process runs, so there's no point retrying the trace.
+    pub fn start(use_service: bool) -> Self {
+        let (trace, status) = match IoTrace::start() {
+            Ok(trace) => (Some(trace), ActivityStatus::Running),
+            Err(error) if etw::is_access_denied(&error) => (None, ActivityStatus::NeedsAdmin),
+            Err(_) => (None, ActivityStatus::Failed),
+        };
+        let live = (trace.is_none() && use_service).then(LiveSource::default);
+        Self { trace, status: Cell::new(status), live, last_take: Cell::new(None) }
     }
 
     pub fn status(&self) -> ActivityStatus {
-        self.status
+        self.status.get()
     }
 
-    /// Each process's activity since the last call, or `None` when not tracing. Disk I/O is
-    /// counted by the thread that issued it, so `processes` (whose thread lists say which thread
-    /// is whose) attributes it; I/O by threads that have since exited is dropped.
+    /// Each process's activity since the last call, or `None` when there's neither a trace nor
+    /// the service. Disk I/O is counted by the thread that issued it, so `processes` (whose
+    /// thread lists say which thread is whose) attributes it; I/O by threads that have since
+    /// exited is dropped.
     pub fn take(&self, processes: &[ProcessInfo]) -> Option<HashMap<u32, ProcessActivity>> {
-        let totals = self.trace.as_ref()?.drain();
-        Some(attribute(&totals.disk_by_thread, &totals.network_by_process, processes))
+        let now = Instant::now();
+        let elapsed = self.last_take.replace(Some(now)).map_or(1.0, |at| now.duration_since(at).as_secs_f64());
+        if let Some(trace) = &self.trace {
+            let totals = trace.drain();
+            return Some(attribute(&totals.disk_by_thread, &totals.network_by_process, processes));
+        }
+        let Some(snapshot) = self.live.as_ref().and_then(LiveSource::latest) else {
+            if self.status.get() == ActivityStatus::Service {
+                self.status.set(ActivityStatus::NeedsAdmin);
+            }
+            return None;
+        };
+        self.status.set(ActivityStatus::Service);
+        // The service publishes rates; turn them into bytes over this sample's interval.
+        let bytes = |rate: f32| (f64::from(rate) * elapsed) as u64;
+        Some(
+            snapshot
+                .processes
+                .iter()
+                .map(|p| {
+                    let activity = ProcessActivity {
+                        disk_read: bytes(p.disk_read),
+                        disk_written: bytes(p.disk_write),
+                        sent: bytes(p.sent),
+                        received: bytes(p.received),
+                    };
+                    (p.pid, activity)
+                })
+                .collect(),
+        )
     }
 }
 
@@ -110,7 +178,7 @@ mod tests {
 
     #[test]
     fn starts_or_says_why_not() {
-        let tracer = ActivityTracer::start();
+        let tracer = ActivityTracer::start(false);
         assert_eq!(tracer.take(&[]).is_some(), tracer.status() == ActivityStatus::Running);
     }
 }

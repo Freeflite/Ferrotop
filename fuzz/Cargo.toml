@@ -38,3 +38,10 @@ path = "fuzz_targets/lhm_response.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false

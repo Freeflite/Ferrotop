@@ -61,11 +61,12 @@ pub enum Page {
     Performance,
     Services,
     Network,
+    History,
 }
 
 impl Page {
-    /// In tab order, which is also the UI's page numbering.
-    pub const ALL: [Page; 4] = [Page::Processes, Page::Performance, Page::Services, Page::Network];
+    /// In tab order.
+    pub const ALL: [Page; 5] = [Page::Processes, Page::Performance, Page::Services, Page::Network, Page::History];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -73,11 +74,23 @@ impl Page {
             Page::Performance => "performance",
             Page::Services => "services",
             Page::Network => "network",
+            Page::History => "history",
         }
     }
 
+    /// The UI's number for the page (pages in between are sub-pages like Find).
     pub fn index(self) -> i32 {
-        Page::ALL.iter().position(|p| *p == self).unwrap_or(0) as i32
+        match self {
+            Page::Processes => 0,
+            Page::Performance => 1,
+            Page::Services => 2,
+            Page::Network => 3,
+            Page::History => 7,
+        }
+    }
+
+    pub fn from_index(index: i32) -> Option<Page> {
+        Page::ALL.into_iter().find(|page| page.index() == index)
     }
 }
 

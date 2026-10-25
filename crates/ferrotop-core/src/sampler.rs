@@ -50,7 +50,7 @@ impl Sampler {
         let mut sampler = Self { processes, devices, workers: Vec::new() };
         sampler.workers.push(thread::Builder::new().name("ferrotop-sampler".into()).spawn(move || {
             let mut collector = DetailsCollector::new();
-            let tracer = ActivityTracer::start();
+            let tracer = ActivityTracer::start(true);
             loop {
                 deliver(Sample::capture(&mut collector, &tracer));
                 if !wait(&process_inbox, interval) {

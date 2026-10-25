@@ -24,7 +24,7 @@ pub struct ServiceInfo {
 }
 
 /// A Service Control Manager handle (not a kernel handle, so `OwnedHandle` doesn't fit).
-struct ScManager(SC_HANDLE);
+pub(crate) struct ScManager(pub(crate) SC_HANDLE);
 
 impl Drop for ScManager {
     fn drop(&mut self) {
@@ -33,7 +33,7 @@ impl Drop for ScManager {
     }
 }
 
-fn open_manager(access: u32) -> Result<ScManager> {
+pub(crate) fn open_manager(access: u32) -> Result<ScManager> {
     // SAFETY: null machine and database names mean the local active database; no other preconditions.
     let raw = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), access) };
     if raw.is_null() {
@@ -42,7 +42,7 @@ fn open_manager(access: u32) -> Result<ScManager> {
     Ok(ScManager(raw))
 }
 
-fn open_service(manager: &ScManager, name: &str, access: u32) -> Result<ScManager> {
+pub(crate) fn open_service(manager: &ScManager, name: &str, access: u32) -> Result<ScManager> {
     let name = wide(name);
     // SAFETY: `manager` is a live SCM handle and `name` is NUL-terminated.
     let raw = unsafe { OpenServiceW(manager.0, name.as_ptr(), access) };

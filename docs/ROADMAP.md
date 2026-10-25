@@ -85,12 +85,26 @@ are noted so each port can be checked against the original.
 - [x] Reproducible release builds from a pinned toolchain, with a signed build-provenance
       attestation
 
+## v0.6: history, windows and network tools (done)
+
+- [x] Per-process disk and network activity from a private kernel ETW session (`etwmon.c`):
+      DiskIo by issuing thread, TcpIp/UdpIp by process; Disk and Network columns
+- [x] Window list per process (Windows tab), finding windows by title or class, and Pick a
+      window to jump to its owner (`wndprv.c`)
+- [x] Ping and trace route (the Network Tools plugin, minus whois and GeoIP, which would send
+      addresses to third parties)
+- [x] A history service: a least-privilege LocalSystem service that records system-wide figures
+      every second and each minute's busiest processes for 7 days, and shares live disk,
+      network and temperature figures with unelevated windows. One-way by design: it reads no
+      requests, and writes only to a folder users can't change
+- [x] History page: CPU, memory, disk, network, GPU and CPU temperature over an hour, a day or a
+      week, with the busiest programs
+- [x] Tray icon, close to tray, start at sign-in, one instance at a time
+
 ## Next
 
-- Per-process network and disk activity
-- Window list, and searching processes by window
-- Plugins' most-used features: network tools, extended GPU and ETW-based disk/network stats
-- Running as a service for a persistent history
+- Hovering a history graph to see that moment's busiest processes
+- Per-process history graphs in process properties
 
 ## Probably out of scope
 

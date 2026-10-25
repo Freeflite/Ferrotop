@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod activity;
+pub mod archive;
 pub mod delta;
 pub mod details;
 pub mod find;
@@ -20,6 +21,7 @@ pub mod network;
 pub mod perf;
 pub mod properties;
 pub mod provider;
+pub mod recorder;
 pub mod sampler;
 pub mod settings;
 pub mod table;

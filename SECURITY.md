@@ -37,6 +37,21 @@ Only the latest release gets security fixes.
   resume, priority, affinity, service start and stop, and dump files. Each action re-checks the
   process's creation time on the handle it acts through, so a recycled PID can't redirect it.
   Critical processes (which would crash Windows) can't be ended or suspended.
+- **The optional history service** runs as LocalSystem, so it's designed to take nothing from
+  ordinary users:
+  - It reads no requests. It only writes: history files to `%ProgramData%\Ferrotop`, and live
+    figures to a shared memory section (`Global\Ferrotop.Live`) that users may only read.
+    Ferrotop windows treat both as untrusted and check everything they read.
+  - It runs from its own copy in `%ProgramFiles%\Ferrotop`, which users can't modify, never from
+    wherever you launched Ferrotop.
+  - Its folder is created owned by Administrators with a protected ACL (SYSTEM and
+    Administrators write, users read). ProgramData lets any user create folders, so an
+    existing folder that isn't owned by SYSTEM or Administrators, or a link, is moved aside
+    first; the service checks again before it writes anything and won't record into a folder
+    that fails.
+  - Windows strips every privilege from its token except bypass traverse checking, creating
+    global objects (for the live section) and system profiling (for the kernel trace).
+  - Installing and removing it are explicit actions that need administrator approval.
 - **Files it writes:** `%APPDATA%\Ferrotop\settings.ini`, and dump files you ask for in
   `%LOCALAPPDATA%\Ferrotop\Dumps`. Dumps contain the process's memory, which can include
   passwords and keys, so they stay in your profile.

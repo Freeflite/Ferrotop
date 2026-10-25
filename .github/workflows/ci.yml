@@ -84,7 +84,7 @@ jobs:
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $asan = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll" | Select-Object -First 1
           $env:PATH = "$($asan.DirectoryName);$env:PATH"
-          foreach ($target in 'sys_buffers', 'json', 'lhm_response') {
+          foreach ($target in 'sys_buffers', 'json', 'lhm_response', 'archive') {
             cargo +nightly fuzz run --fuzz-dir fuzz $target -- -max_total_time=60
             if ($LASTEXITCODE -ne 0) { throw "fuzz target $target failed" }
           }

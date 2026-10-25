@@ -22,6 +22,7 @@ use ferrotop_sys::nvidia::Nvml;
 use ferrotop_sys::pdh::{CounterId, Query};
 use ferrotop_sys::system::CpuTimes;
 
+use crate::activity::LiveSource;
 use crate::history::History;
 use crate::lhm;
 
@@ -46,6 +47,8 @@ pub enum CpuTempSource {
     #[default]
     None,
     PawnIo,
+    /// The history service, which reads PawnIO on this process's behalf.
+    Service,
     LibreHardwareMonitor,
 }
 
@@ -203,8 +206,13 @@ pub struct PerfCollector {
     /// When to try PawnIO again; `None` once it's known not to support this CPU.
     pawnio_retry: Option<Instant>,
     pawnio_failures: u32,
-    lhm_port: u16,
+    /// `None` when LibreHardwareMonitor mustn't be asked (in the service: whatever listens on
+    /// that port could be anyone's).
+    lhm_port: Option<u16>,
     lhm_retry: Instant,
+    /// The history service's live figures, for temperatures without elevation; `None` in the
+    /// service itself.
+    live: Option<LiveSource>,
 }
 
 impl Default for PerfCollector {
@@ -240,14 +248,27 @@ impl PerfCollector {
             pawnio: PawnIoState::NotInstalled,
             pawnio_retry: Some(Instant::now()),
             pawnio_failures: 0,
-            lhm_port: lhm::DEFAULT_PORT,
+            lhm_port: Some(lhm::DEFAULT_PORT),
             lhm_retry: Instant::now(),
+            live: Some(LiveSource::default()),
         }
+    }
+
+    /// Whether to take temperatures from the history service when PawnIO can't be read
+    /// directly; the service itself mustn't.
+    pub fn set_use_service(&mut self, use_service: bool) {
+        self.live = use_service.then(LiveSource::default);
     }
 
     /// The port LibreHardwareMonitor's web server listens on, if not the default.
     pub fn set_lhm_port(&mut self, port: u16) {
-        self.lhm_port = port;
+        self.lhm_port = Some(port);
+    }
+
+    /// Never asks LibreHardwareMonitor: for the history service, which runs as SYSTEM and so
+    /// mustn't read what any program listening on a local port sends it.
+    pub fn disable_lhm(&mut self) {
+        self.lhm_port = None;
     }
 
     /// Sets up the next slow source, if any is left, and returns whether it did. Run it between
@@ -326,10 +347,15 @@ impl PerfCollector {
                 }
             }
         }
+        if self.thermal.is_none()
+            && let Some(temps) = self.live.as_ref().and_then(LiveSource::latest).and_then(|live| live.temps)
+        {
+            return (Some(temps), CpuTempSource::Service);
+        }
         // When nothing listens on its port, finding that out takes a while (Windows retries the
         // connection), so LibreHardwareMonitor waits until everything else is set up.
-        if self.setup == Setup::Done && now >= self.lhm_retry {
-            match lhm::cpu_temps(self.lhm_port) {
+        if let Some(port) = self.lhm_port.filter(|_| self.setup == Setup::Done && now >= self.lhm_retry) {
+            match lhm::cpu_temps(port) {
                 Ok(Some(temps)) => return (Some(temps), CpuTempSource::LibreHardwareMonitor),
                 Ok(None) => {}
                 Err(_) => self.lhm_retry = now + LHM_RETRY,

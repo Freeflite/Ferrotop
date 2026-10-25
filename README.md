@@ -7,8 +7,9 @@ Ferrotop is a Rust re-imagining of [System Informer](https://github.com/winsider
 structure layouts are ported from System Informer's C sources (MIT). See
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-> **Status: v0.5.** Processes, process properties, performance, services, network connections
-> and the common process actions are in. See [docs/ROADMAP.md](docs/ROADMAP.md) for what's next.
+> **Status: v0.6 in progress.** Processes, process properties, performance, history,
+> services, network connections and the common process actions are in. See
+> [docs/ROADMAP.md](docs/ROADMAP.md) for what's next.
 
 ## What it does
 
@@ -65,6 +66,21 @@ A page like Task Manager's: a device list with live mini-graphs, and for the sel
 The View menu lists the selected device's graphs; turn any of them off. With all of a device's
 graphs off, its figures fill the pane in large type.
 
+### History
+
+Ferrotop can record history around the clock, even when its window is closed: CPU, memory,
+disk, network, GPU and CPU temperature every second, and the busiest programs every minute,
+kept for 7 days. The History page (Ctrl+5) graphs the last hour, day or week and lists which
+programs were busiest.
+
+Recording is done by a small Windows service, installed from the History page with
+administrator approval. It's built to be safe to leave running: it runs from its own copy in
+Program Files, keeps only the three privileges it needs, writes only to
+`%ProgramData%\Ferrotop` (which only administrators can change), and takes no input from other
+programs. It also lets Ferrotop show per-process disk and network activity and CPU temperatures
+without running as administrator. **Stop recording** removes the service and keeps what was
+recorded. See [SECURITY.md](SECURITY.md) for the details.
+
 ### Services and Network
 
 - **Services**: every service and driver with status, startup type, host process, account,
@@ -115,7 +131,7 @@ driver. Ferrotop ships no driver, but uses one of these if it's there:
 
 | Key | Action |
 | --- | --- |
-| Ctrl+1 … Ctrl+4 | Processes, Performance, Services, Network |
+| Ctrl+1 … Ctrl+5 | Processes, Performance, Services, Network, History |
 | ↑ / ↓, PgUp / PgDn | Move the selection |
 | ← / → | Collapse / expand the selected node |
 | Enter, double-click | Process properties |

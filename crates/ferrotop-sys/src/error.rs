@@ -13,6 +13,9 @@ pub enum Error {
     Malformed { call: &'static str },
     /// The process exited and its PID now belongs to a different process.
     ProcessGone,
+    /// Something else went wrong; the message says what, e.g. "couldn't copy Ferrotop to
+    /// Program Files".
+    Other { message: &'static str },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -41,6 +44,7 @@ impl fmt::Display for Error {
             Error::HResult { call, hresult } => write!(f, "{call} failed (HRESULT 0x{:08X})", hresult as u32),
             Error::Malformed { call } => write!(f, "{call} returned malformed data"),
             Error::ProcessGone => f.write_str("the process has already exited"),
+            Error::Other { message } => f.write_str(message),
         }
     }
 }

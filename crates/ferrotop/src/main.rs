@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod actions;
+mod history_page;
 mod pages;
 mod performance;
 mod tables;
@@ -22,6 +23,7 @@ use ferrotop_core::provider::{ProcessItem, ProcessKey, ProcessProvider, ProcessS
 use ferrotop_core::sampler::Sampler;
 use ferrotop_core::settings::{CpuGraph, Page, Settings, ThemeMode};
 use ferrotop_core::tree::{self, Row, SortColumn, SortOrder, ViewOptions};
+use ferrotop_sys::service_host;
 use ferrotop_sys::tray::{TrayEvent, TrayIcon};
 use ferrotop_sys::window::{Rgb, TitleBarStyle};
 use performance::Device;
@@ -37,6 +39,7 @@ const MESSAGE_REFRESHES: u8 = 6;
 const PROPERTIES_PAGE: i32 = 4;
 const FIND_PAGE: i32 = 5;
 const TOOLS_PAGE: i32 = 6;
+const HISTORY_PAGE: i32 = 7;
 
 /// Sort columns in the order the UI numbers them (0 = unsorted).
 const UI_COLUMNS: [SortColumn; 17] = [
@@ -169,6 +172,9 @@ impl App {
         self.update_details(ui);
         if self.page == 1 {
             self.update_performance(ui);
+        }
+        if self.page == HISTORY_PAGE {
+            self.history_tick(ui);
         }
         self.refresh_pages(ui);
     }
@@ -341,7 +347,7 @@ impl App {
 
     fn page_shown(&mut self, ui: &MainWindow, page: i32) {
         self.page = page;
-        if let Some(&tab) = usize::try_from(page).ok().and_then(|i| Page::ALL.get(i)) {
+        if let Some(tab) = Page::from_index(page) {
             self.settings.page = tab;
             self.save_settings(ui);
         }
@@ -349,6 +355,7 @@ impl App {
             1 => self.update_performance(ui),
             2 => self.load_services(ui),
             3 => self.load_network(ui),
+            HISTORY_PAGE => self.show_history(ui),
             _ => {}
         }
     }
@@ -511,7 +518,7 @@ impl App {
             )
         };
         let activity = match self.provider.stats().activity {
-            ActivityStatus::Running => format!(
+            ActivityStatus::Running | ActivityStatus::Service => format!(
                 "  ·  disk read {} write {}  ·  network sent {} received {}",
                 fallback(format::rate(item.disk_read_rate), "0"),
                 fallback(format::rate(item.disk_write_rate), "0"),
@@ -786,6 +793,27 @@ fn with_app(f: impl FnOnce(&mut App, &MainWindow)) {
 
 /// Paints the native title bar (caption, text, buttons and border) in the current theme's
 /// toolbar colors so it blends into the app. Does nothing until the window exists.
+/// `--service`: runs as the history service, started by the Service Control Manager.
+fn run_history_service() {
+    let _ = service_host::run_service(|stop| {
+        let Ok(dir) = service_host::data_dir() else { return };
+        // Only record into a folder ordinary users can't tamper with (the installer makes it).
+        if !service_host::is_trusted_dir(&dir) {
+            return;
+        }
+        let _ = ferrotop_core::recorder::run(&dir, |timeout| stop.wait(timeout));
+    });
+}
+
+/// The exit code an elevated helper reports: 0 for success, else the Windows error code (or 1).
+fn exit_code(result: ferrotop_sys::Result<()>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(ferrotop_sys::Error::Win32 { code, .. }) if code > 1 => code as i32,
+        Err(_) => 1,
+    }
+}
+
 /// The native window's handle value, once it has been shown.
 fn window_handle(ui: &MainWindow) -> Option<usize> {
     let handle = ui.window().window_handle();
@@ -891,6 +919,20 @@ fn main() -> Result<(), slint::PlatformError> {
     // no legacy injection points.
     let _ = ferrotop_sys::control::harden_process();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    // The history service and its installer are this same program, without a window.
+    if arguments.iter().any(|a| a == "--service") {
+        run_history_service();
+        return Ok(());
+    }
+    if arguments.iter().any(|a| a == "--install-service") {
+        let installed = std::env::current_exe()
+            .map_err(|_| ferrotop_sys::Error::Other { message: "couldn't find Ferrotop's own path" })
+            .and_then(|exe| service_host::install(&exe));
+        std::process::exit(exit_code(installed));
+    }
+    if arguments.iter().any(|a| a == "--uninstall-service") {
+        std::process::exit(exit_code(service_host::uninstall()));
+    }
     // Started at sign-in: begin in the tray.
     let start_in_tray = arguments.iter().any(|a| a == "--tray");
     // An elevated restart takes over from the copy that launched it.
@@ -987,6 +1029,9 @@ fn main() -> Result<(), slint::PlatformError> {
         slint::CloseRequestResponse::HideWindow
     });
     ui.on_close_to_tray_toggled(handler(&ui, &app, App::set_close_to_tray));
+    ui.on_history_range_chosen(handler(&ui, &app, App::choose_history_range));
+    let history_service = handler(&ui, &app, |app, ui, ()| app.history_service_clicked(ui));
+    ui.on_history_service_clicked(move || history_service(()));
     ui.on_start_at_sign_in_toggled(handler(&ui, &app, App::set_start_at_sign_in));
 
     let tray = TrayIcon::add("Ferrotop", |event| {

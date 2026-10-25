@@ -142,6 +142,30 @@ pub struct Sample {
 }
 
 impl Sample {
+    /// The OS state without per-process details (user, path, icon, signature), with disk and
+    /// network activity from `tracer`: what the history recorder needs.
+    pub fn capture_basic(tracer: &ActivityTracer) -> ferrotop_sys::Result<Self> {
+        let cpus = ferrotop_sys::system::processor_times()?;
+        let cycles = ferrotop_sys::system::cycle_times().ok();
+        let processes = ferrotop_sys::process::enumerate()?;
+        let memory = ferrotop_sys::system::memory_status()?;
+        let taken_at = Instant::now();
+        let activity = tracer.take(&processes);
+        Ok(Self {
+            processes,
+            cpus,
+            cycles,
+            memory,
+            details: HashMap::new(),
+            services: Arc::default(),
+            exited_cycles: HashMap::new(),
+            files: Vec::new(),
+            activity,
+            activity_status: tracer.status(),
+            taken_at,
+        })
+    }
+
     /// Captures the OS state, filling in per-process details from `collector` and disk and
     /// network activity from `tracer`.
     pub fn capture(collector: &mut DetailsCollector, tracer: &ActivityTracer) -> ferrotop_sys::Result<Self> {

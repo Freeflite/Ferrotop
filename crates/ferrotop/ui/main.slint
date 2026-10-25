@@ -6,11 +6,12 @@ import {
 } from "widgets.slint";
 import { CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, PerformancePage, Stat } from "performance.slint";
 import { DataTable, TableColumn, TablePanel, TableRowData } from "table.slint";
+import { HistoryGraph, HistoryGraphView } from "history.slint";
 
 export { Theme, ProcessRow, ProcessAction, CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, Stat, TableColumn, TableRowData }
 
 // The generic tables, and what happened to one of them.
-export enum TableId { services, network, find, properties, stack, tools }
+export enum TableId { services, network, find, properties, stack, tools, history }
 export enum TableEvent { sort, click, activate, move, action }
 
 // Everything about a table except its columns and rows (which are models set once from Rust).
@@ -29,7 +30,7 @@ export struct AffinityCpu {
 }
 
 // Pages: 0 Processes, 1 Performance, 2 Services, 3 Network, 4 process properties, 5 Find,
-// 6 Ping and trace route.
+// 6 Ping and trace route, 7 History.
 export component MainWindow inherits Window {
     title: "Ferrotop";
     icon: @image-url("../assets/ferrotop-256.png");
@@ -154,6 +155,19 @@ export component MainWindow inherits Window {
 
     // Ping and trace route page.
     in property <bool> tools-running;
+
+    // History page.
+    in property <[TableColumn]> history-columns;
+    in property <[TableRowData]> history-rows;
+    in property <TableMeta> history-meta;
+    in property <[HistoryGraph]> history-graphs;
+    // 0 the last hour, 1 the last 24 hours, 2 the last 7 days.
+    in property <int> history-range;
+    in property <string> history-axis-start;
+    in property <string> history-status;
+    in property <bool> history-installed;
+    // Installing or removing the service.
+    in property <bool> history-busy;
     in-out property <string> tools-target;
 
     // Dialogs.
@@ -208,6 +222,9 @@ export component MainWindow inherits Window {
     // Runs a network tool (0 ping, 1 trace route) against an address or host name.
     callback tools-start(int, string);
     callback tools-cancel();
+    callback history-range-chosen(int);
+    // Installs the history service, or removes it if it's installed.
+    callback history-service-clicked();
     callback run-task(string, bool);
     callback affinity-toggled(int, bool);
     callback affinity-all(bool);
@@ -230,6 +247,8 @@ export component MainWindow inherits Window {
             find.focus-table();
         } else if (page == 6) {
             tools-address.focus();
+        } else if (page == 7) {
+            history.focus-table();
         }
         root.page-shown(page);
     }
@@ -245,6 +264,8 @@ export component MainWindow inherits Window {
             properties.focus-table();
         } else if (table == TableId.tools) {
             tools.focus-table();
+        } else if (table == TableId.history) {
+            history.focus-table();
         }
     }
 
@@ -328,6 +349,10 @@ export component MainWindow inherits Window {
             }
             if (event.modifiers.control && event.text == "4") {
                 root.show-page(3);
+                return accept;
+            }
+            if (event.modifiers.control && event.text == "5") {
+                root.show-page(7);
                 return accept;
             }
             if (root.page == 4 && event.modifiers.control && event.text == Key.Tab) {
@@ -415,6 +440,14 @@ export component MainWindow inherits Window {
                         active: root.page == 3 || root.page == 6;
                         clicked => {
                             root.show-page(3);
+                        }
+                    }
+
+                    Tab {
+                        text: "History";
+                        active: root.page == 7;
+                        clicked => {
+                            root.show-page(7);
                         }
                     }
 
@@ -702,6 +735,10 @@ export component MainWindow inherits Window {
                                 }
                                 if (event.modifiers.control && event.text == "4") {
                                     root.show-page(3);
+                                    return accept;
+                                }
+                                if (event.modifiers.control && event.text == "5") {
+                                    root.show-page(7);
                                     return accept;
                                 }
                                 if (event.text == Key.UpArrow) {
@@ -1186,6 +1223,142 @@ export component MainWindow inherits Window {
                             }
                             action(index) => {
                                 root.table-event(TableId.find, TableEvent.action, index);
+                            }
+                        }
+                    }
+                }
+
+                // History.
+                Rectangle {
+                    visible: root.page == 7;
+                    width: parent.width;
+                    height: parent.height;
+
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        Rectangle {
+                            background: Theme.panel;
+                            height: 50px;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 8px;
+
+                                Text {
+                                    text: "History";
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle {
+                                    width: 6px;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: "Last hour";
+                                        primary: root.history-range == 0;
+                                        clicked => {
+                                            root.history-range-chosen(0);
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: "24 hours";
+                                        primary: root.history-range == 1;
+                                        clicked => {
+                                            root.history-range-chosen(1);
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: "7 days";
+                                        primary: root.history-range == 2;
+                                        clicked => {
+                                            root.history-range-chosen(2);
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: root.history-status;
+                                    color: Theme.muted;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: root.history-busy ? "Working…" : root.history-installed ? "Stop recording…" : "Record history…";
+                                        enabled: !root.history-busy;
+                                        clicked => {
+                                            root.history-service-clicked();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            vertical-stretch: 1;
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 12px;
+
+                            VerticalLayout {
+                                horizontal-stretch: 3;
+                                spacing: 6px;
+
+                                for graph in root.history-graphs: HistoryGraphView {
+                                    data: graph;
+                                    axis-start: root.history-axis-start;
+                                }
+                            }
+
+                            history := TablePanel {
+                                horizontal-stretch: 2;
+                                columns: root.history-columns;
+                                rows: root.history-rows;
+                                content-width: root.history-meta.content-width;
+                                sort-column: root.history-meta.sort-column;
+                                sort-ascending: root.history-meta.sort-ascending;
+                                selected-index: root.history-meta.selected-index;
+                                status: root.history-meta.status;
+                                empty-text: root.history-meta.empty-text;
+                                filter-placeholder: "Filter programs";
+                                actions: [];
+                                filter-changed(text) => {
+                                    root.table-filter(TableId.history, text);
+                                }
+                                sort-by(column) => {
+                                    root.table-event(TableId.history, TableEvent.sort, column);
+                                }
+                                row-clicked(index) => {
+                                    root.table-event(TableId.history, TableEvent.click, index);
+                                }
+                                row-activated(index) => {
+                                    root.table-event(TableId.history, TableEvent.activate, index);
+                                }
+                                move-selection(step) => {
+                                    root.table-event(TableId.history, TableEvent.move, step);
+                                }
                             }
                         }
                     }

@@ -492,6 +492,7 @@ fn cpu_detail(perf: &PerformanceProvider, stats: &SystemStats, cpu_graph: CpuGra
     }
     let source = match (perf.cpu_temp_source, perf.pawnio) {
         (CpuTempSource::PawnIo, _) => "PawnIO driver".to_owned(),
+        (CpuTempSource::Service, _) => "Ferrotop's history service (PawnIO)".to_owned(),
         (CpuTempSource::LibreHardwareMonitor, _) => "LibreHardwareMonitor".to_owned(),
         (CpuTempSource::None, PawnIoState::NeedsAdmin) => "Run as administrator to read it through PawnIO".to_owned(),
         (CpuTempSource::None, PawnIoState::Unsupported) => "Not supported on this CPU".to_owned(),

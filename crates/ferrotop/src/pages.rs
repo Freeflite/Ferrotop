@@ -62,6 +62,7 @@ pub struct Pages {
     /// The running or last network tool, its target, and its probes so far.
     tools_run: Option<(Tool, IpAddr)>,
     tools_probes: Vec<Probe>,
+    pub(crate) history: crate::history_page::HistoryPage,
 }
 
 impl Default for Pages {
@@ -88,6 +89,7 @@ impl Default for Pages {
             tools_cancel: None,
             tools_run: None,
             tools_probes: Vec::new(),
+            history: crate::history_page::HistoryPage::default(),
         }
     }
 }
@@ -107,15 +109,22 @@ impl Pages {
         ui.set_stack_rows(self.stack.rows_model());
         ui.set_tools_columns(self.tools.columns_model());
         ui.set_tools_rows(self.tools.rows_model());
+        self.history.bind(ui);
         ui.set_properties_tabs(ModelRc::from(Rc::clone(&self.tab_titles)));
         ui.set_properties_actions(ModelRc::from(Rc::clone(&self.actions)));
         self.services.empty_text = "Loading services…".into();
         self.network.empty_text = "Loading connections…".into();
         self.find.empty_text = "Type part of a name and press Search. Every process is searched for windows, loaded DLLs and named handles (files, registry keys, mutexes, sections…). Run as administrator to include other users' and system processes. Or press Pick a window and click any window to find its process.".into();
         self.tools.empty_text = "Type an IP address or host name, then Ping (four echoes, a second apart) or Trace route (each router on the way, up to 30). Only that address is contacted; a host name is looked up through Windows first.".into();
-        for id in
-            [TableId::Services, TableId::Network, TableId::Find, TableId::Properties, TableId::Stack, TableId::Tools]
-        {
+        for id in [
+            TableId::Services,
+            TableId::Network,
+            TableId::Find,
+            TableId::Properties,
+            TableId::Stack,
+            TableId::Tools,
+            TableId::History,
+        ] {
             self.push(ui, id);
         }
     }
@@ -128,6 +137,7 @@ impl Pages {
             TableId::Properties => &mut self.properties,
             TableId::Stack => &mut self.stack,
             TableId::Tools => &mut self.tools,
+            TableId::History => &mut self.history.view,
         }
     }
 
@@ -141,7 +151,12 @@ impl Pages {
             TableId::Properties => ui.set_properties_meta(meta),
             TableId::Stack => ui.set_stack_meta(meta),
             TableId::Tools => ui.set_tools_meta(meta),
+            TableId::History => ui.set_history_meta(meta),
         }
+    }
+
+    pub(crate) fn push_history(&mut self, ui: &MainWindow) {
+        self.push(ui, TableId::History);
     }
 }
 
