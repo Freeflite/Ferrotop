@@ -1,4 +1,4 @@
-//! A small, strict JSON parser, used only for LibreHardwareMonitor's sensor tree.
+//! A small, strict JSON parser, for LibreHardwareMonitor's sensor tree and History layout files.
 //!
 //! It rejects anything outside RFC 8259 rather than guessing, limits nesting depth so hostile
 //! input can't overflow the stack, and never panics on any input (see the robustness tests).
@@ -36,6 +36,13 @@ impl Json {
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Json::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_number(&self) -> Option<f64> {
+        match self {
+            Json::Number(n) => Some(*n),
             _ => None,
         }
     }

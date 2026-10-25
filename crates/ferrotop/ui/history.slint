@@ -8,76 +8,271 @@ export struct HistoryGraph {
     corner: string,
     line: string,
     fill: string,
+    // A second series, drawn as a line over the first.
+    line-b: string,
+    // Where it goes: its column and width in twelfths of the page, its top and height.
+    column: int,
+    span: int,
+    top: length,
+    height: length,
 }
 
-// A history graph: its title and figure, the graph (with gaps where nothing was recorded), and
-// the time axis.
-export component HistoryGraphView inherits VerticalLayout {
+// A small graph in the header.
+export struct HeaderTile {
+    label: string,
+    value: string,
+    line: string,
+    fill: string,
+    kind: int,
+}
+
+// An entry of the right-click menu that puts a figure in History (target 0) or the header (1).
+export struct SeriesMenuEntry {
+    text: string,
+    key: string,
+    target: int,
+}
+
+// A row of the graph picker: a device's heading, or a figure to tick.
+export struct PickerRow {
+    title: string,
+    key: string,
+    shown: bool,
+    heading: bool,
+}
+
+// Drags that move or resize a graph. Positions are taken from the window, not the handle, as
+// the handle moves with the graph.
+component DragArea inherits TouchArea {
+    // While pressed: how far the pointer has moved since it went down.
+    out property <length> drag-x;
+    out property <length> drag-y;
+    property <length> start-x;
+    property <length> start-y;
+    callback started();
+    callback finished();
+
+    pointer-event(event) => {
+        if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+            self.start-x = self.absolute-position.x + self.mouse-x;
+            self.start-y = self.absolute-position.y + self.mouse-y;
+            self.drag-x = 0;
+            self.drag-y = 0;
+            self.started();
+        }
+        if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+            self.finished();
+        }
+    }
+    moved => {
+        if (self.pressed) {
+            self.drag-x = self.absolute-position.x + self.mouse-x - self.start-x;
+            self.drag-y = self.absolute-position.y + self.mouse-y - self.start-y;
+        }
+    }
+}
+
+// A history graph: its title and figure, the graph (with gaps where nothing was recorded) and
+// the time axis. Drag the title to move it, the right or bottom edge to resize it.
+export component HistoryGraphView inherits Rectangle {
     in property <HistoryGraph> data;
     in property <string> axis-start;
+    // A twelfth of the page's width.
+    in property <length> unit;
+    // Dropped after a drag, with its middle at `column` (in twelfths) and `y`.
+    callback dropped(float, length);
+    callback resized(int, length);
+    callback removed();
 
-    spacing: 2px;
+    property <length> gap: 12px;
 
-    HorizontalLayout {
-        Text {
-            text: root.data.title;
-            font-size: 11px;
-            color: Theme.muted;
-            overflow: elide;
-            horizontal-stretch: 1;
+    pure function span-for(dx: length) -> int {
+        max(2, min(12, round((root.data.span * root.unit + dx) / root.unit)))
+    }
+    pure function height-for(dy: length) -> length {
+        max(60px, min(900px, root.data.height + dy))
+    }
+
+    property <bool> moving: mover.pressed && (abs(mover.drag-x) > 4px || abs(mover.drag-y) > 4px);
+    property <bool> sizing: right-edge.pressed || bottom-edge.pressed || corner.pressed;
+    property <length> size-x: right-edge.pressed ? right-edge.drag-x : corner.pressed ? corner.drag-x : 0px;
+    property <length> size-y: bottom-edge.pressed ? bottom-edge.drag-y : corner.pressed ? corner.drag-y : 0px;
+    // While resizing, the width snaps to twelfths.
+    property <int> span: root.span-for(root.size-x);
+    property <length> graph-height: root.height-for(root.size-y);
+
+    x: root.data.column * root.unit + (root.moving ? mover.drag-x : 0px);
+    y: root.data.top + (root.moving ? mover.drag-y : 0px);
+    width: root.span * root.unit - root.gap;
+    height: root.graph-height;
+    z: root.moving || root.sizing ? 10 : 0;
+    opacity: root.moving ? 0.8 : 1;
+
+    VerticalLayout {
+        spacing: 2px;
+
+        HorizontalLayout {
+            height: 18px;
+            spacing: 6px;
+            padding-right: 18px;
+
+            Text {
+                text: root.data.title;
+                font-size: 11px;
+                color: Theme.muted;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            Text {
+                text: root.data.corner;
+                font-size: 11px;
+                color: Theme.muted;
+                vertical-alignment: center;
+            }
         }
 
-        Text {
-            text: root.data.corner;
-            font-size: 11px;
-            color: Theme.muted;
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.panel-raised;
+            border-width: root.moving || root.sizing ? 2px : 1px;
+            border-color: Theme.device-color(root.data.kind).with-alpha(root.moving || root.sizing ? 1 : 0.6);
+            clip: true;
+
+            for i in 3: Rectangle {
+                x: 0;
+                y: (i + 1) * parent.height / 4;
+                width: parent.width;
+                height: 1px;
+                background: Theme.grid;
+            }
+            for i in 11: Rectangle {
+                x: (i + 1) * parent.width / 12;
+                y: 0;
+                width: 1px;
+                height: parent.height;
+                background: Theme.grid;
+            }
+
+            MiniGraph {
+                width: parent.width;
+                height: parent.height;
+                line-commands: root.data.line;
+                fill-commands: root.data.fill;
+                tint: Theme.device-color(root.data.kind);
+            }
+
+            if root.data.line-b != "": Path {
+                width: parent.width;
+                height: parent.height;
+                viewbox-width: 100;
+                viewbox-height: 100;
+                fit: fill;
+                commands: root.data.line-b;
+                stroke: Theme.device-color(root.data.kind).darker(0.35);
+                stroke-width: 1px;
+            }
+        }
+
+        HorizontalLayout {
+            height: 14px;
+
+            Text {
+                text: root.axis-start;
+                font-size: 10px;
+                color: Theme.muted;
+                horizontal-stretch: 1;
+            }
+
+            Text {
+                text: "now";
+                font-size: 10px;
+                color: Theme.muted;
+            }
         }
     }
 
-    Rectangle {
-        min-height: 44px;
-        vertical-stretch: 1;
-        background: Theme.panel-raised;
-        border-width: 1px;
-        border-color: Theme.device-color(root.data.kind).with-alpha(0.6);
-        clip: true;
+    // The title is the handle for moving the graph.
+    mover := DragArea {
+        x: 0;
+        y: 0;
+        width: parent.width - 20px;
+        height: 18px;
+        mouse-cursor: root.moving ? MouseCursor.grabbing : MouseCursor.grab;
+        finished => {
+            if (abs(self.drag-x) > 4px || abs(self.drag-y) > 4px) {
+                root.dropped(root.data.column + root.data.span / 2 + self.drag-x / root.unit, root.data.top + root.data.height / 2 + self.drag-y);
+            }
+        }
+    }
 
+    remove := TouchArea {
+        x: parent.width - 18px;
+        y: 0;
+        width: 18px;
+        height: 18px;
+        mouse-cursor: pointer;
+        clicked => {
+            root.removed();
+        }
+
+        Text {
+            text: "×";
+            font-size: 14px;
+            color: remove.has-hover ? Theme.text : Theme.muted;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    right-edge := DragArea {
+        x: parent.width - 6px;
+        y: 20px;
+        width: 6px;
+        height: parent.height - 50px;
+        mouse-cursor: MouseCursor.ew-resize;
+        finished => {
+            root.resized(root.span-for(self.drag-x), root.data.height);
+        }
+    }
+
+    // Along the bottom of the graph, above the time axis.
+    bottom-edge := DragArea {
+        x: 0;
+        y: parent.height - 19px;
+        width: parent.width - 14px;
+        height: 6px;
+        mouse-cursor: MouseCursor.ns-resize;
+        finished => {
+            root.resized(root.data.span, root.height-for(self.drag-y));
+        }
+    }
+
+    corner := DragArea {
+        x: parent.width - 14px;
+        y: parent.height - 30px;
+        width: 14px;
+        height: 14px;
+        mouse-cursor: MouseCursor.nwse-resize;
+        finished => {
+            root.resized(root.span-for(self.drag-x), root.height-for(self.drag-y));
+        }
+
+        // Grip marks.
         for i in 3: Rectangle {
-            x: 0;
-            y: (i + 1) * parent.height / 4;
-            width: parent.width;
-            height: 1px;
-            background: Theme.grid;
+            x: parent.width - (i + 1) * 4px;
+            y: parent.height - 3px;
+            width: 2px;
+            height: 2px;
+            background: Theme.muted;
         }
-        for i in 11: Rectangle {
-            x: (i + 1) * parent.width / 12;
-            y: 0;
-            width: 1px;
-            height: parent.height;
-            background: Theme.grid;
-        }
-
-        MiniGraph {
-            width: parent.width;
-            height: parent.height;
-            line-commands: root.data.line;
-            fill-commands: root.data.fill;
-            tint: Theme.device-color(root.data.kind);
-        }
-    }
-
-    HorizontalLayout {
-        Text {
-            text: root.axis-start;
-            font-size: 10px;
-            color: Theme.muted;
-            horizontal-stretch: 1;
-        }
-
-        Text {
-            text: "now";
-            font-size: 10px;
-            color: Theme.muted;
+        for i in 2: Rectangle {
+            x: parent.width - 3px;
+            y: parent.height - (i + 2) * 4px + 1px;
+            width: 2px;
+            height: 2px;
+            background: Theme.muted;
         }
     }
 }

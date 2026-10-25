@@ -9,6 +9,7 @@ mod history_page;
 mod pages;
 mod performance;
 mod process_columns;
+mod series_ui;
 mod tables;
 
 use std::cell::RefCell;
@@ -115,6 +116,10 @@ struct App {
     /// Settings changed by something that happens many times a second (resizing a column), to
     /// save with the next refresh.
     settings_dirty: bool,
+    header_tiles: Rc<VecModel<HeaderTile>>,
+    header_histories: series_ui::HeaderHistories,
+    /// What the graph picker is choosing for: 0 History, 1 the header.
+    picker_target: i32,
 }
 
 impl App {
@@ -143,6 +148,9 @@ impl App {
             tray: None,
             visible: false,
             settings_dirty: false,
+            header_tiles: Rc::new(VecModel::default()),
+            header_histories: series_ui::HeaderHistories::default(),
+            picker_target: 0,
         }
     }
 
@@ -193,6 +201,7 @@ impl App {
     fn apply_perf(&mut self, ui: &MainWindow, mut perf: PerfSample) {
         self.provider.set_gpu_usage(std::mem::take(&mut perf.gpu_processes));
         self.perf.update_devices(&perf);
+        self.record_header();
         if self.visible && self.page == 1 {
             self.update_performance(ui);
         }
@@ -416,17 +425,8 @@ impl App {
         let stats = self.provider.stats();
         let total = stats.memory.total_physical;
         let used = stats.memory_used();
-        let memory_share = if total == 0 { 0.0 } else { used as f64 / total as f64 * 100.0 };
 
-        ui.set_cpu_text(format!("{:.1}%", stats.cpu_usage * 100.0).into());
-        ui.set_memory_text(format!("{memory_share:.0}%").into());
-        // Graph paths are drawn in a 100x100 box that the UI stretches to fit.
-        let (line, fill) = self.provider.cpu_history().svg_paths(100.0, 100.0, 1.0);
-        ui.set_cpu_line(line.into());
-        ui.set_cpu_fill(fill.into());
-        let (line, fill) = self.provider.memory_history().svg_paths(100.0, 100.0, 1.0);
-        ui.set_memory_line(line.into());
-        ui.set_memory_fill(fill.into());
+        self.update_header();
 
         ui.set_status_cpu(
             format!("CPU {:.1}% (kernel {:.1}%)", stats.cpu_usage * 100.0, stats.kernel_usage * 100.0).into(),
@@ -960,6 +960,8 @@ fn main() -> Result<(), slint::PlatformError> {
         app.actions.bind(&ui);
         app.apply_theme(&ui);
         app.push_columns(&ui);
+        ui.set_header_tiles(ModelRc::from(Rc::clone(&app.header_tiles)));
+        app.init_history(&ui);
         if elevated && !debug_privilege {
             app.show_message(&ui, "Running elevated, but SeDebugPrivilege couldn't be enabled".into());
         }
@@ -1015,6 +1017,23 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     ui.on_close_to_tray_toggled(handler(&ui, &app, App::set_close_to_tray));
     ui.on_history_range_chosen(handler(&ui, &app, App::choose_history_range));
+    let dropped = handler(&ui, &app, App::history_graph_dropped);
+    ui.on_history_graph_dropped(move |index, column, y| dropped((index, column, y)));
+    let resized = handler(&ui, &app, App::history_graph_resized);
+    ui.on_history_graph_resized(move |index, span, height| resized((index, span, height)));
+    ui.on_history_graph_removed(handler(&ui, &app, App::history_graph_removed));
+    let programs = handler(&ui, &app, |app, ui, ()| app.toggle_history_programs(ui));
+    ui.on_history_programs_toggled(move || programs(()));
+    ui.on_history_programs_resized(handler(&ui, &app, App::history_programs_resized));
+    let layouts = handler(&ui, &app, |app, ui, ()| app.list_history_layouts(ui));
+    ui.on_history_layouts_requested(move || layouts(()));
+    ui.on_history_layout_chosen(handler(&ui, &app, App::choose_history_layout));
+    ui.on_picker_requested(handler(&ui, &app, App::open_picker));
+    let picked = handler(&ui, &app, App::picker_toggled);
+    ui.on_picker_toggled(move |key, shown| picked((key, shown)));
+    ui.on_series_menu_requested(handler(&ui, &app, App::series_menu_requested));
+    let chosen = handler(&ui, &app, App::series_menu_chosen);
+    ui.on_series_menu_chosen(move |key, target| chosen((key, target)));
     ui.on_windows_hidden_toggled(handler(&ui, &app, |app, ui, include: bool| {
         app.pages.windows_hidden = include;
         app.load_windows(ui);

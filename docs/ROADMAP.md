@@ -97,8 +97,13 @@ are noted so each port can be checked against the original.
       every second and each minute's busiest processes for 7 days, and shares live disk,
       network and temperature figures with unelevated windows. One-way by design: it reads no
       requests, and writes only to a folder users can't change
-- [x] History page: CPU, memory, disk, network, GPU and CPU temperature over an hour, a day or a
-      week, with the busiest programs
+- [x] History page over an hour, a day or a week, with the busiest programs. The service
+      records every Performance figure by a stable id (per core, CCD, disk, adapter, GPU engine,
+      temperatures, power, fan, clocks): every second for a day, then each minute's average and
+      peak. Graphs are picked, dragged, resized and saved as JSON layout files; built-in
+      layouts; right-click anything on the Performance page to add it to History
+- [x] Header graphs: pick any figure for the small graphs beside the tabs
+- [x] Movable, resizable columns in every table; a RAM (private working set) column
 - [x] Tray icon, close to tray, start at sign-in, one instance at a time
 
 ## Next

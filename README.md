@@ -21,11 +21,13 @@ structure layouts are ported from System Informer's C sources (MIT). See
 - **Cycle-based CPU usage**, System Informer's default and more accurate than time sampling,
   including the final cycles of processes that exit between samples, with an **Interrupts** row
   for CPU spent in DPCs and interrupts.
-- Columns for **CPU**, **GPU**, **I/O rate**, **disk** and **network** activity, **private
-  bytes**, **working set**, **GPU memory** (dedicated and shared), **threads**, **handles**,
-  **user name**, **description** and **verified signer** (Authenticode, embedded or
-  catalog-signed). Pick them from the View menu. Disk and network come from a kernel event trace
-  (as in Resource Monitor), so they need Ferrotop to run as administrator.
+- Columns for **CPU**, **GPU**, **RAM** (private working set, Task Manager's "Memory"), **I/O
+  rate**, **disk** and **network** activity, **private bytes**, **working set**, **GPU memory**
+  (dedicated and shared), **threads**, **handles**, **user name**, **description** and
+  **verified signer** (Authenticode, embedded or catalog-signed). Pick them from the View menu;
+  drag a heading to move a column, or its right edge to resize it (in every table). Disk and
+  network come from a kernel event trace (as in Resource Monitor), so they need Ferrotop to run
+  as administrator.
 - **Highlighting** like System Informer's: your processes, your elevated processes, service
   hosts, system-account processes, and processes that just started or exited. Suspended
   processes are marked.
@@ -66,14 +68,26 @@ A page like Task Manager's: a device list with live mini-graphs, and for the sel
   NVIDIA GPUs add the same through NVML (untested so far).
 
 The View menu lists the selected device's graphs; turn any of them off. With all of a device's
-graphs off, its figures fill the pane in large type.
+graphs off, its figures fill the pane in large type. **Right-click** any graph, core, device or
+figure to show it in History or in the header's small graphs (View → Header graphs… picks
+those too).
 
 ### History
 
-Ferrotop can record history around the clock, even when its window is closed: CPU, memory,
-disk, network, GPU and CPU temperature every second, and the busiest programs every minute,
-kept for 7 days. The History page (Ctrl+5) graphs the last hour, day or week and lists which
-programs were busiest.
+Ferrotop can record history around the clock, even when its window is closed: every figure the
+Performance page shows (each core, CCD and its temperature, each disk and network adapter, GPU
+load, engines, memory, temperature, hotspot, power, fan and clocks) every second, and the
+busiest programs every minute. A week is kept: every second for the overall figures, every
+minute (average and peak) for the rest after the first day. The History page (Ctrl+5) graphs
+the last hour, day or week and lists which programs were busiest.
+
+Graphs are yours to arrange: **Add graphs…** picks any recorded figure (or right-click it on the
+Performance page), drag a graph by its title to move it, drag its right or bottom edge to resize
+it (widths snap to twelfths of the page), and × removes it. **Layouts** offers ready-made
+arrangements (Overview, Temperatures, GPU, CPU, Compact) and any layout files in
+`%APPDATA%\Ferrotop\Layouts`: **Save this layout to a file** writes the current one there as
+JSON to edit, keep or share. **Programs** shows or hides the table of programs; drag the bar
+beside it to share the room.
 
 Recording is done by a small Windows service, installed from the History page with
 administrator approval. It's built to be safe to leave running: it runs from its own copy in
@@ -122,8 +136,9 @@ driver. Ferrotop ships no driver, but uses one of these if it's there:
 - **Run as administrator** from the status bar. When elevated, Ferrotop enables
   `SeDebugPrivilege` (as System Informer does) to read processes owned by services and other
   users.
-- Settings (theme, columns, sort, tree view, page, hidden graphs, window size) are saved to
-  `%APPDATA%\Ferrotop\settings.ini`; dump files go to `%LOCALAPPDATA%\Ferrotop\Dumps`.
+- Settings (theme, columns and their widths, sort, tree view, page, hidden graphs, History and
+  header graphs, window size) are saved to `%APPDATA%\Ferrotop\settings.ini`; History layouts
+  to `%APPDATA%\Ferrotop\Layouts`; dump files go to `%LOCALAPPDATA%\Ferrotop\Dumps`.
 - The OS is sampled on background threads: processes on one, the Performance view's devices on
   another (each disk's details on its own), so a slow device holds up only itself and each shows
   as soon as it can be read. Slow queries (handles, services, stacks, searches) run on worker

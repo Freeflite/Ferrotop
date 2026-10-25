@@ -253,6 +253,14 @@ pub fn open_file_location(path: &str) -> Result<()> {
     shell_execute("open", "explorer.exe", &format!("/select,\"{path}\""))
 }
 
+/// Opens a folder in Explorer.
+pub fn open_folder(path: &str) -> Result<()> {
+    if path.is_empty() || path.contains('"') {
+        return Err(Error::Malformed { call: "open_folder" });
+    }
+    shell_execute("open", "explorer.exe", &format!("\"{path}\""))
+}
+
 /// Process-wide hardening, applied once at startup:
 /// - later `LoadLibrary` calls search System32 (and explicitly added folders) only, never the
 ///   application or current directory, so a planted DLL next to the exe can't be picked up;

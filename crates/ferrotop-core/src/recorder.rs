@@ -14,6 +14,8 @@ use crate::activity::ActivityTracer;
 use crate::archive::{self, ArchiveWriter, MAX_MINUTE_ENTRIES, MinuteEntry, MinuteRecord, SecondRecord};
 use crate::perf::{PerfCollector, PerfSample, PerformanceProvider, cpu_temperature};
 use crate::provider::{ProcessProvider, ProcessState, Sample, is_pseudo_process};
+use crate::series::{self, Unit};
+use crate::series_file::SeriesWriter;
 
 /// Busiest processes kept per minute: by CPU, then by disk and by network.
 const TOP_CPU: usize = 6;
@@ -37,7 +39,9 @@ pub fn run(dir: &Path, mut wait: impl FnMut(Duration) -> bool) -> io::Result<()>
     collector.disable_lhm();
     let mut devices = PerformanceProvider::new();
     let mut writer = ArchiveWriter::open(dir, archive::now_unix())?;
+    let mut series_writer = SeriesWriter::new(dir);
     let mut minute = MinuteTotals::new(archive::now_unix() / 60 * 60);
+    let mut series_minute = SeriesMinute::default();
     let mut pruned_at = 0;
     loop {
         let now = archive::now_unix();
@@ -56,14 +60,23 @@ pub fn run(dir: &Path, mut wait: impl FnMut(Duration) -> bool) -> io::Result<()>
 
         // A full disk shouldn't stop the service; the next second tries again.
         let _ = writer.write_second(&second_record(now, &processes, &devices, &perf));
+        // Every other sensor, by id.
+        let readings: Vec<series::Reading> =
+            series::readings(&devices).into_iter().filter(|r| !series::is_builtin(&r.id)).collect();
+        let values: Vec<(&str, Unit, f64)> =
+            readings.iter().map(|r| (r.id.as_str(), r.unit, r.value.unwrap_or(f64::NAN))).collect();
+        let _ = series_writer.write_second(now, &values);
         let this_minute = now / 60 * 60;
         if this_minute != minute.start {
             if let Some(record) = minute.finish() {
                 let _ = writer.write_minute(&record);
             }
+            let _ = series_writer.write_minute(minute.start, &series_minute.finish());
             minute = MinuteTotals::new(this_minute);
+            series_minute = SeriesMinute::default();
         }
         minute.add(&processes);
+        series_minute.add(&values);
         if let Some(live) = &live {
             live.publish(&live_snapshot(&processes, &perf));
         }
@@ -76,7 +89,42 @@ pub fn run(dir: &Path, mut wait: impl FnMut(Duration) -> bool) -> io::Result<()>
     if let Some(record) = minute.finish() {
         let _ = writer.write_minute(&record);
     }
+    let _ = series_writer.write_minute(minute.start, &series_minute.finish());
     Ok(())
+}
+
+/// Each series' sum, count and peak over the current minute.
+#[derive(Debug, Default)]
+struct SeriesMinute {
+    series: Vec<(String, Unit, f64, u32, f64)>,
+    numbers: HashMap<String, usize>,
+}
+
+impl SeriesMinute {
+    fn add(&mut self, values: &[(&str, Unit, f64)]) {
+        for &(id, unit, value) in values {
+            if !value.is_finite() {
+                continue;
+            }
+            let number = *self.numbers.entry(id.to_owned()).or_insert_with(|| {
+                self.series.push((id.to_owned(), unit, 0.0, 0, f64::MIN));
+                self.series.len() - 1
+            });
+            let (_, _, sum, count, peak) = &mut self.series[number];
+            *sum += value;
+            *count += 1;
+            *peak = peak.max(value);
+        }
+    }
+
+    /// `(id, unit, average, peak)` of each series that had a value.
+    fn finish(&self) -> Vec<(&str, Unit, f64, f64)> {
+        self.series
+            .iter()
+            .filter(|(.., count, _)| *count > 0)
+            .map(|(id, unit, sum, count, peak)| (id.as_str(), *unit, sum / f64::from(*count), *peak))
+            .collect()
+    }
 }
 
 /// Notes how the service started, for troubleshooting: `service-status.txt` in its folder.
@@ -260,6 +308,10 @@ mod tests {
         assert!(seconds.iter().all(|s| s.memory_used > 0 && (0.0..=1.0).contains(&s.cpu)));
         // The minute in progress is written when recording stops.
         assert!(!archive::read_minutes(&dir, now - 120, now + 1).is_empty());
+        // Every sensor beyond the built-in ones goes in the series files: a CPU has a speed.
+        let ids = ["cpu.speed".to_owned()];
+        assert!(!crate::series_file::read(&dir, &ids, now - 60, now + 1, false).0[0].is_empty());
+        assert!(!crate::series_file::read(&dir, &ids, now - 120, now + 1, true).0[0].is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

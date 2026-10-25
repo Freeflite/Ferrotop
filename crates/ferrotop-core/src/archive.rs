@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 
 /// How many days of history are kept.
 pub const KEEP_DAYS: u64 = 7;
+/// The every-second `.series` files are big (a value for every sensor), so only today's and
+/// yesterday's are kept; older days have their every-minute files.
+pub const KEEP_SERIES_SECONDS_DAYS: u64 = 1;
 const SECONDS_MAGIC: [u8; 4] = *b"FTHS";
 const MINUTES_MAGIC: [u8; 4] = *b"FTHM";
 const VERSION: u32 = 1;
@@ -280,14 +283,20 @@ fn open_for_append(path: &Path, magic: [u8; 4], size: usize) -> io::Result<File>
     Ok(file)
 }
 
-/// Deletes day files older than [`KEEP_DAYS`].
+/// Deletes day files older than [`KEEP_DAYS`] (every-second `.series` files sooner).
 pub fn prune(dir: &Path, now: u64) {
     let oldest = day_name(now.saturating_sub(KEEP_DAYS * DAY));
+    let oldest_series = day_name(now.saturating_sub(KEEP_SERIES_SECONDS_DAYS * DAY));
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let Some((day, extension)) = name.split_once('.') else { continue };
-        if matches!(extension, "seconds" | "minutes") && day.len() == 10 && day < oldest.as_str() {
+        let keep_from = match extension {
+            "seconds" | "minutes" | "series-minutes" => &oldest,
+            "series" => &oldest_series,
+            _ => continue,
+        };
+        if day.len() == 10 && day < keep_from.as_str() {
             let _ = std::fs::remove_file(entry.path());
         }
     }

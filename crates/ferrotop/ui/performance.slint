@@ -10,6 +10,8 @@ export struct DeviceTile {
     value: string,
     line: string,
     fill: string,
+    // What right-clicking it offers to show in History or the header: graph keys, `;` between.
+    history: string,
 }
 
 // A graph in the detail pane. Paths are in a 100x100 box; `line-b` is an optional second series.
@@ -22,6 +24,8 @@ export struct GraphData {
     line-a: string,
     fill-a: string,
     line-b: string,
+    // What right-clicking it offers to show in History or the header: graph keys, `;` between.
+    history: string,
 }
 
 // A graph the View menu can show or hide for the selected device.
@@ -49,11 +53,15 @@ export struct GraphPair {
 export struct Stat {
     label: string,
     value: string,
+    // What right-clicking it offers to show in History or the header: graph keys, `;` between.
+    history: string,
 }
 
 component PerfGraph inherits VerticalLayout {
     in property <GraphData> data;
     in property <bool> show-axis: true;
+    // Right-clicked: what it can show in History or the header, and where.
+    callback series-menu(string, length, length);
 
     spacing: 2px;
 
@@ -114,6 +122,15 @@ component PerfGraph inherits VerticalLayout {
             stroke: Theme.device-color(root.data.kind).darker(0.35);
             stroke-width: 1px;
         }
+
+        // Right-click: put this in History or the header.
+        TouchArea {
+            pointer-event(event) => {
+                if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up && root.data.history != "") {
+                    root.series-menu(root.data.history, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
     }
 
     if root.show-axis: HorizontalLayout {
@@ -135,6 +152,7 @@ component PerfGraph inherits VerticalLayout {
 // One small graph in a grid (per core, per thread, per CCX).
 component CellGraph inherits Rectangle {
     in property <GraphData> data;
+    callback series-menu(string, length, length);
 
     background: Theme.panel-raised;
     border-width: 1px;
@@ -164,12 +182,22 @@ component CellGraph inherits Rectangle {
         font-size: 9px;
         color: Theme.text;
     }
+
+    // Right-click: put this in History or the header.
+    TouchArea {
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up && root.data.history != "") {
+                root.series-menu(root.data.history, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
 }
 
 component DeviceTileView inherits Rectangle {
     in property <DeviceTile> tile;
     in property <bool> selected;
     callback clicked;
+    callback series-menu(string, length, length);
 
     height: 64px;
     background: root.selected ? Theme.selection : touch.has-hover ? Theme.hover : transparent;
@@ -177,6 +205,11 @@ component DeviceTileView inherits Rectangle {
     touch := TouchArea {
         clicked => {
             root.clicked();
+        }
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up && root.tile.history != "") {
+                root.series-menu(root.tile.history, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
         }
     }
 
@@ -235,24 +268,35 @@ component DeviceTileView inherits Rectangle {
     }
 }
 
-component BigStat inherits VerticalLayout {
+component BigStat inherits Rectangle {
     in property <Stat> stat;
     // With every graph hidden the figures get the room, at a size readable from across the desk.
     in property <bool> large;
+    callback series-menu(string, length, length);
 
-    spacing: 0px;
+    VerticalLayout {
+        spacing: 0px;
 
-    Text {
-        text: root.stat.label;
-        font-size: root.large ? 17px : 11px;
-        color: Theme.muted;
+        Text {
+            text: root.stat.label;
+            font-size: root.large ? 17px : 11px;
+            color: Theme.muted;
+        }
+
+        Text {
+            text: root.stat.value;
+            font-size: root.large ? 64px : 20px;
+            font-weight: root.large ? 300 : 400;
+            color: Theme.text;
+        }
     }
 
-    Text {
-        text: root.stat.value;
-        font-size: root.large ? 64px : 20px;
-        font-weight: root.large ? 300 : 400;
-        color: Theme.text;
+    TouchArea {
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up && root.stat.history != "") {
+                root.series-menu(root.stat.history, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
     }
 }
 
@@ -280,6 +324,8 @@ export component PerformancePage inherits Rectangle {
     callback select-device(int);
     callback show-page(int);
     callback cpu-graph-chosen(int);
+    // Something was right-clicked: the graph keys it offers, and where.
+    callback series-menu(string, length, length);
 
     public function focus-list() {
         keys.focus();
@@ -319,6 +365,9 @@ export component PerformancePage inherits Rectangle {
                         clicked => {
                             keys.focus();
                             root.select-device(index);
+                        }
+                        series-menu(keys, x, y) => {
+                            root.series-menu(keys, x, y);
                         }
                     }
                 }
@@ -453,6 +502,9 @@ export component PerformancePage inherits Rectangle {
                         width: grid.cell-width;
                         height: grid.cell-height;
                         data: cell;
+                        series-menu(keys, x, y) => {
+                            root.series-menu(keys, x, y);
+                        }
                     }
                 }
             }
@@ -460,6 +512,9 @@ export component PerformancePage inherits Rectangle {
             for graph in root.big-graphs: PerfGraph {
                 data: graph;
                 vertical-stretch: 3;
+                series-menu(keys, x, y) => {
+                    root.series-menu(keys, x, y);
+                }
             }
 
             for pair in root.graph-pairs: HorizontalLayout {
@@ -469,11 +524,17 @@ export component PerformancePage inherits Rectangle {
                 PerfGraph {
                     data: pair.left;
                     show-axis: false;
+                    series-menu(keys, x, y) => {
+                        root.series-menu(keys, x, y);
+                    }
                 }
 
                 if pair.has-right: PerfGraph {
                     data: pair.right;
                     show-axis: false;
+                    series-menu(keys, x, y) => {
+                        root.series-menu(keys, x, y);
+                    }
                 }
                 if !pair.has-right: Rectangle { }
             }
@@ -482,6 +543,9 @@ export component PerformancePage inherits Rectangle {
                 data: graph;
                 show-axis: false;
                 vertical-stretch: 1;
+                series-menu(keys, x, y) => {
+                    root.series-menu(keys, x, y);
+                }
             }
 
             HorizontalLayout {
@@ -499,6 +563,9 @@ export component PerformancePage inherits Rectangle {
                         for stat in root.stats-top: BigStat {
                             stat: stat;
                             large: root.figures-only;
+                            series-menu(keys, x, y) => {
+                                root.series-menu(keys, x, y);
+                            }
                         }
                     }
 
@@ -509,6 +576,9 @@ export component PerformancePage inherits Rectangle {
                         for stat in root.stats-bottom: BigStat {
                             stat: stat;
                             large: root.figures-only;
+                            series-menu(keys, x, y) => {
+                                root.series-menu(keys, x, y);
+                            }
                         }
                     }
 
@@ -519,6 +589,9 @@ export component PerformancePage inherits Rectangle {
                         for stat in root.stats-sensors: BigStat {
                             stat: stat;
                             large: root.figures-only;
+                            series-menu(keys, x, y) => {
+                                root.series-menu(keys, x, y);
+                            }
                         }
                     }
                 }

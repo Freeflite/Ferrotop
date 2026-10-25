@@ -5,6 +5,7 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 
+use crate::series::{self, GraphSpec};
 use crate::tree::{SortColumn, SortOrder};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -149,6 +150,13 @@ pub struct Settings {
     /// Column order and widths the user chose, per table (`services`, `properties.threads`...):
     /// titles in display order with their widths.
     pub table_layouts: std::collections::BTreeMap<String, Vec<(String, u32)>>,
+    /// The History page's graphs, in order, with their sizes.
+    pub history_graphs: Vec<GraphSpec>,
+    /// Whether the History page shows its table of programs, and how wide.
+    pub history_programs: bool,
+    pub history_programs_width: u32,
+    /// The small graphs in the header, by series id.
+    pub header_graphs: Vec<String>,
 }
 
 impl Default for Settings {
@@ -181,6 +189,10 @@ impl Default for Settings {
             lhm_port: crate::lhm::DEFAULT_PORT,
             close_to_tray: true,
             table_layouts: std::collections::BTreeMap::new(),
+            history_graphs: series::default_graphs(),
+            history_programs: true,
+            history_programs_width: 460,
+            header_graphs: vec!["cpu".into(), "memory".into()],
         }
     }
 }
@@ -238,6 +250,22 @@ impl Settings {
                         .collect();
                 }
                 "close-to-tray" => settings.close_to_tray = value != "false",
+                "history-graphs" => settings.history_graphs = series::parse_graphs(value),
+                "history-programs" => settings.history_programs = value != "false",
+                "history-programs-width" => {
+                    if let Some(width) = value.parse().ok().filter(|w| (200..=4000).contains(w)) {
+                        settings.history_programs_width = width;
+                    }
+                }
+                "header-graphs" => {
+                    settings.header_graphs = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|id| series::is_id(id))
+                        .take(series::MAX_HEADER)
+                        .map(str::to_owned)
+                        .collect();
+                }
                 table if table.starts_with("table.") => {
                     let name = &table["table.".len()..];
                     if is_table_key(name) && settings.table_layouts.len() < 64 {
@@ -291,6 +319,10 @@ impl Settings {
         }
         let _ = writeln!(text, "hidden-graphs={}", self.hidden_graphs.join(","));
         let _ = writeln!(text, "close-to-tray={}", self.close_to_tray);
+        let _ = writeln!(text, "history-graphs={}", series::format_graphs(&self.history_graphs));
+        let _ = writeln!(text, "history-programs={}", self.history_programs);
+        let _ = writeln!(text, "history-programs-width={}", self.history_programs_width);
+        let _ = writeln!(text, "header-graphs={}", self.header_graphs.join(","));
         for (name, layout) in &self.table_layouts {
             let columns: Vec<String> = layout.iter().map(|(title, width)| format!("{title}:{width}")).collect();
             let _ = writeln!(text, "table.{name}={}", columns.join("|"));
@@ -301,6 +333,11 @@ impl Settings {
 
     fn path() -> Option<PathBuf> {
         Some(PathBuf::from(std::env::var_os("APPDATA")?).join("Ferrotop").join("settings.ini"))
+    }
+
+    /// Where History layout files go: any `.json` layout dropped here shows in the Layouts menu.
+    pub fn layouts_dir() -> Option<PathBuf> {
+        Some(PathBuf::from(std::env::var_os("APPDATA")?).join("Ferrotop").join("Layouts"))
     }
 
     pub fn load() -> Self {
@@ -342,6 +379,10 @@ mod tests {
             close_to_tray: false,
             table_layouts: [("properties.threads".to_owned(), vec![("TID".to_owned(), 80), ("CPU".to_owned(), 64)])]
                 .into(),
+            history_graphs: vec![GraphSpec::new("gpu.0.temp+gpu.0.hotspot", 12, 220)],
+            history_programs: false,
+            history_programs_width: 333,
+            header_graphs: vec!["cpu.temp".into(), "gpu.0.load".into()],
         };
         assert_eq!(Settings::parse(&settings.serialize()), settings);
     }

@@ -1,4 +1,4 @@
-import { AboutSlint, Button, CheckBox, LineEdit, ListView, Palette } from "std-widgets.slint";
+import { AboutSlint, Button, CheckBox, LineEdit, ListView, Palette, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import {
     ColumnChoice, ColumnHeader, DetailLabel, DetailValue, Graph, LegendItem, MenuDivider, MenuEntry, ProcessAction, ProcessColumn, ProcessRow,
@@ -6,7 +6,7 @@ import {
 } from "widgets.slint";
 import { CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, PerformancePage, Stat } from "performance.slint";
 import { DataTable, TableColumn, TablePanel, TableRowData } from "table.slint";
-import { HistoryGraph, HistoryGraphView } from "history.slint";
+import { HeaderTile, HistoryGraph, HistoryGraphView, PickerRow, SeriesMenuEntry } from "history.slint";
 
 export { Theme, ProcessRow, ProcessAction, CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, Stat, TableColumn, TableRowData }
 
@@ -71,12 +71,8 @@ export component MainWindow inherits Window {
     in property <[ColumnChoice]> column-choices-left;
     in property <[ColumnChoice]> column-choices-right;
 
-    in property <string> cpu-text;
-    in property <string> cpu-line;
-    in property <string> cpu-fill;
-    in property <string> memory-text;
-    in property <string> memory-line;
-    in property <string> memory-fill;
+    // The small graphs in the header.
+    in property <[HeaderTile]> header-tiles;
 
     in property <string> status-cpu;
     in property <string> status-memory;
@@ -170,6 +166,19 @@ export component MainWindow inherits Window {
     in property <bool> history-busy;
     // The installed service is another version of Ferrotop.
     in property <bool> history-outdated;
+    // How tall the graphs are all together, whether the programs table shows, and its width.
+    in property <length> history-content-height;
+    in property <bool> history-programs-shown: true;
+    in-out property <length> history-programs-width: 460px;
+    // The Layouts menu's layouts: built-in ones, then files from the layouts folder.
+    in property <[string]> history-layouts;
+
+    // The graph picker (for History or the header) and the right-click menu that puts a
+    // Performance figure in either.
+    in property <string> picker-title;
+    in property <string> picker-hint;
+    in property <[PickerRow]> picker-rows;
+    in property <[SeriesMenuEntry]> series-menu-entries;
     in-out property <string> tools-target;
 
     // Dialogs.
@@ -232,6 +241,23 @@ export component MainWindow inherits Window {
     callback tools-start(int, string);
     callback tools-cancel();
     callback history-range-chosen(int);
+    // A graph was dragged and dropped with its middle at `column` (in twelfths) and `y`; resized
+    // (to `span` twelfths and a height); or removed.
+    callback history-graph-dropped(int, float, length);
+    callback history-graph-resized(int, int, length);
+    callback history-graph-removed(int);
+    callback history-programs-toggled();
+    callback history-programs-resized(length);
+    // Fill `history-layouts` before the menu opens; a layout was chosen (-1 save this one to a
+    // file, -2 open the layouts folder).
+    callback history-layouts-requested();
+    callback history-layout-chosen(int);
+    // Fill the picker for History (0) or the header (1); a figure was ticked or unticked.
+    callback picker-requested(int);
+    callback picker-toggled(string, bool);
+    // Fill `series-menu-entries` for these graph keys; an entry was chosen.
+    callback series-menu-requested(string);
+    callback series-menu-chosen(string, int);
     callback windows-hidden-toggled(bool);
     // Installs the history service, or removes it if it's installed.
     callback history-service-clicked();
@@ -239,6 +265,23 @@ export component MainWindow inherits Window {
     callback affinity-toggled(int, bool);
     callback affinity-all(bool);
     callback affinity-apply();
+
+    // Something on the Performance page was right-clicked.
+    function open-series-menu(keys: string, x: length, y: length) {
+        root.series-menu-requested(keys);
+        if (root.series-menu-entries.length > 0) {
+            root.menu-x = x;
+            root.menu-y = y;
+            series-menu.show();
+        }
+    }
+
+    function open-picker(target: int, x: length, y: length) {
+        root.picker-requested(target);
+        root.menu-x = x;
+        root.menu-y = y;
+        picker.show();
+    }
 
     public function show-page(page: int) {
         root.page = page;
@@ -440,22 +483,36 @@ export component MainWindow inherits Window {
                         width: 4px;
                     }
 
-                    Graph {
-                        label: "CPU";
-                        value: root.cpu-text;
-                        line-commands: root.cpu-line;
-                        fill-commands: root.cpu-fill;
-                        tint: Theme.cpu-color;
-                        width: 120px;
+                    // Right-click to choose them.
+                    for tile in root.header-tiles: Graph {
+                        label: tile.label;
+                        value: tile.value;
+                        line-commands: tile.line;
+                        fill-commands: tile.fill;
+                        tint: Theme.device-color(tile.kind);
+                        min-width: 84px;
+                        preferred-width: 120px;
+                        max-width: 120px;
+
+                        TouchArea {
+                            pointer-event(event) => {
+                                if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
+                                    root.open-picker(1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                }
+                            }
+                        }
                     }
 
-                    Graph {
-                        label: "Memory";
-                        value: root.memory-text;
-                        line-commands: root.memory-line;
-                        fill-commands: root.memory-fill;
-                        tint: Theme.memory-color;
-                        width: 120px;
+                    if root.header-tiles.length == 0: Rectangle {
+                        width: 60px;
+
+                        TouchArea {
+                            pointer-event(event) => {
+                                if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
+                                    root.open-picker(1, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                }
+                            }
+                        }
                     }
 
                     Rectangle {
@@ -788,6 +845,9 @@ export component MainWindow inherits Window {
                     }
                     show-page(page) => {
                         root.show-page(page);
+                    }
+                    series-menu(keys, x, y) => {
+                        root.open-series-menu(keys, x, y);
                     }
                 }
 
@@ -1273,6 +1333,41 @@ export component MainWindow inherits Window {
                                     alignment: center;
 
                                     Button {
+                                        text: "Add graphs…";
+                                        clicked => {
+                                            root.open-picker(0, root.width - 420px, 104px);
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: "Layouts";
+                                        clicked => {
+                                            root.history-layouts-requested();
+                                            layouts-menu.show();
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
+                                        text: "Programs";
+                                        primary: root.history-programs-shown;
+                                        clicked => {
+                                            root.history-programs-toggled();
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Button {
                                         text: root.history-busy ? "Working…" : root.history-outdated ? "Update service…" : root.history-installed ? "Stop recording…" : "Record history…";
                                         enabled: !root.history-busy;
                                         clicked => {
@@ -1283,30 +1378,77 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        HorizontalLayout {
+                        history-row := HorizontalLayout {
                             vertical-stretch: 1;
                             padding-left: 12px;
                             padding-right: 12px;
-                            spacing: 12px;
 
-                            VerticalLayout {
-                                horizontal-stretch: 3;
-                                spacing: 6px;
+                            history-area := ScrollView {
+                                horizontal-stretch: 1;
+                                content-width: self.visible-width;
+                                content-height: max(self.visible-height, root.history-content-height);
 
-                                for graph in root.history-graphs: HistoryGraphView {
+                                for graph[index] in root.history-graphs: HistoryGraphView {
                                     data: graph;
+                                    unit: history-area.visible-width / 12;
                                     axis-start: root.history-axis-start;
+                                    dropped(column, y) => {
+                                        root.history-graph-dropped(index, column, y);
+                                    }
+                                    resized(span, height) => {
+                                        root.history-graph-resized(index, span, height);
+                                    }
+                                    removed => {
+                                        root.history-graph-removed(index);
+                                    }
                                 }
 
-                                // Takes up the room while there are no graphs yet: an empty layout
-                                // would cap the whole window's height.
+                                if root.history-graphs.length == 0: Text {
+                                    x: 20px;
+                                    y: 30px;
+                                    width: history-area.visible-width - 40px;
+                                    text: "No graphs. Add some with Add graphs… or Layouts, or right-click anything on the Performance page and choose Show in History.";
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                    horizontal-alignment: center;
+                                }
+                            }
+
+                            // Drag to share the room between the graphs and the programs.
+                            if root.history-programs-shown: Rectangle {
+                                width: 11px;
+
                                 Rectangle {
-                                    vertical-stretch: root.history-graphs.length == 0 ? 1 : 0;
+                                    x: 5px;
+                                    width: 1px;
+                                    background: splitter.has-hover || splitter.pressed ? Theme.accent-cool : Theme.border;
+                                }
+
+                                splitter := TouchArea {
+                                    property <length> start-width;
+                                    property <length> start-x;
+
+                                    mouse-cursor: col-resize;
+                                    pointer-event(event) => {
+                                        if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                            self.start-width = root.history-programs-width;
+                                            self.start-x = self.absolute-position.x + self.mouse-x;
+                                        }
+                                        if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+                                            root.history-programs-resized(root.history-programs-width);
+                                        }
+                                    }
+                                    moved => {
+                                        if (self.pressed) {
+                                            root.history-programs-width = max(240px, min(history-row.width - 340px, self.start-width - (self.absolute-position.x + self.mouse-x - self.start-x)));
+                                        }
+                                    }
                                 }
                             }
 
                             history := TablePanel {
-                                horizontal-stretch: 2;
+                                visible: root.history-programs-shown;
+                                width: root.history-programs-shown ? root.history-programs-width : 0px;
                                 columns: root.history-columns;
                                 rows: root.history-rows;
                                 content-width: root.history-meta.content-width;
@@ -1940,11 +2082,156 @@ export component MainWindow inherits Window {
         }
     }
 
+    series-menu := PopupWindow {
+        x: max(0px, min(root.menu-x, root.width - self.width - 4px));
+        y: max(0px, min(root.menu-y, root.height - self.height - 4px));
+        width: 380px;
+        height: root.series-menu-entries.length * 26px + 40px;
+
+        Rectangle {
+            border-radius: 8px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000040;
+
+            VerticalLayout {
+                padding: 6px;
+
+                Text {
+                    height: 26px;
+                    text: "History and header";
+                    font-weight: 700;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+
+                for entry in root.series-menu-entries: MenuEntry {
+                    text: entry.text;
+                    activated => {
+                        root.series-menu-chosen(entry.key, entry.target);
+                    }
+                }
+            }
+        }
+    }
+
+    picker := PopupWindow {
+        x: max(0px, min(root.menu-x, root.width - self.width - 4px));
+        y: max(0px, min(root.menu-y, root.height - self.height - 4px));
+        width: 400px;
+        height: min(root.height - 40px, 620px);
+        close-policy: PopupClosePolicy.close-on-click-outside;
+
+        Rectangle {
+            border-radius: 8px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000040;
+
+            VerticalLayout {
+                padding: 10px;
+                spacing: 4px;
+
+                Text {
+                    text: root.picker-title;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+
+                Text {
+                    text: root.picker-hint;
+                    font-size: 11px;
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+
+                ListView {
+                    for row in root.picker-rows: Rectangle {
+                        height: 26px;
+
+                        if row.heading: Text {
+                            x: 2px;
+                            height: parent.height;
+                            text: row.title;
+                            font-weight: 600;
+                            color: Theme.text;
+                            vertical-alignment: bottom;
+                        }
+
+                        if !row.heading: CheckBox {
+                            x: 12px;
+                            text: row.title;
+                            checked: row.shown;
+                            toggled => {
+                                root.picker-toggled(row.key, self.checked);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    layouts-menu := PopupWindow {
+        x: root.width - self.width - 16px;
+        y: 104px;
+        width: 300px;
+        height: (root.history-layouts.length + 2) * 26px + 52px;
+
+        Rectangle {
+            border-radius: 8px;
+            background: Theme.panel-raised;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000040;
+
+            VerticalLayout {
+                padding: 6px;
+
+                Text {
+                    height: 26px;
+                    text: "Layouts";
+                    font-weight: 700;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+
+                for layout[index] in root.history-layouts: MenuEntry {
+                    text: layout;
+                    activated => {
+                        root.history-layout-chosen(index);
+                    }
+                }
+
+                MenuDivider { }
+
+                MenuEntry {
+                    text: "Save this layout to a file";
+                    activated => {
+                        root.history-layout-chosen(-1);
+                    }
+                }
+
+                MenuEntry {
+                    text: "Open the layouts folder";
+                    activated => {
+                        root.history-layout-chosen(-2);
+                    }
+                }
+            }
+        }
+    }
+
     view-menu := PopupWindow {
         x: root.width - 314px;
         y: 60px;
         width: 300px;
-        height: root.page == 0 ? 562px : root.page == 1 ? 204px + root.graph-toggles.length * 28px : 184px;
+        height: (root.page == 0 ? 562px : root.page == 1 ? 204px + root.graph-toggles.length * 28px : 184px) + 36px;
         close-policy: PopupClosePolicy.close-on-click-outside;
 
         Rectangle {
@@ -2009,6 +2296,18 @@ export component MainWindow inherits Window {
                         checked <=> root.start-at-sign-in;
                         toggled => {
                             root.start-at-sign-in-toggled(self.checked);
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Button {
+                        text: "Header graphs…";
+                        clicked => {
+                            view-menu.close();
+                            root.open-picker(1, root.width - 420px, 60px);
                         }
                     }
                 }

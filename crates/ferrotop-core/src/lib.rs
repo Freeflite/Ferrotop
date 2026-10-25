@@ -23,6 +23,8 @@ pub mod properties;
 pub mod provider;
 pub mod recorder;
 pub mod sampler;
+pub mod series;
+pub mod series_file;
 pub mod settings;
 pub mod table;
 pub mod tree;

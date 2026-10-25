@@ -52,7 +52,12 @@ Only the latest release gets security fixes.
   - Windows strips every privilege from its token except bypass traverse checking, creating
     global objects (for the live section) and system profiling (for the kernel trace).
   - Installing and removing it are explicit actions that need administrator approval.
-- **Files it writes:** `%APPDATA%\Ferrotop\settings.ini`, and dump files you ask for in
+- **History layout files** (`%APPDATA%\Ferrotop\Layouts\*.json`) may come from anyone, so
+  they're read with the same strict, depth-limited JSON parser as LibreHardwareMonitor's
+  output, capped in size, and only ever turned into a list of graphs: ids are checked against a
+  short alphabet, sizes are clamped, and nothing in them is run or fetched.
+- **Files it writes:** `%APPDATA%\Ferrotop\settings.ini`, layouts you save in
+  `%APPDATA%\Ferrotop\Layouts`, and dump files you ask for in
   `%LOCALAPPDATA%\Ferrotop\Dumps`. Dumps contain the process's memory, which can include
   passwords and keys, so they stay in your profile.
 

@@ -7,6 +7,7 @@ use ferrotop_core::format;
 use ferrotop_core::history::{History, nice_ceiling};
 use ferrotop_core::perf::{CpuTempSource, PawnIoState, PerformanceProvider, cpu_temperature};
 use ferrotop_core::provider::SystemStats;
+use ferrotop_core::series::slug;
 use ferrotop_core::settings::CpuGraph;
 
 use crate::{CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, Stat};
@@ -145,11 +146,23 @@ fn graph(id: &str, kind: i32, title: &str, corner: String, a: &History, max: f64
         line_a: line_a.into(),
         fill_a: fill_a.into(),
         line_b: b.map(|b| paths(b, max).0).unwrap_or_default().into(),
+        history: Default::default(),
     }
 }
 
+/// What right-clicking a graph offers to show in History or the header: graph keys (one series
+/// id, or two joined by `+`) separated by `;`.
+fn keyed(mut graph: GraphData, keys: impl Into<String>) -> GraphData {
+    graph.history = keys.into().into();
+    graph
+}
+
 fn stat(label: &str, value: impl Into<String>) -> Stat {
-    Stat { label: label.into(), value: value.into().into() }
+    Stat { label: label.into(), value: value.into().into(), history: Default::default() }
+}
+
+fn keyed_stat(label: &str, value: impl Into<String>, keys: impl Into<String>) -> Stat {
+    Stat { history: keys.into().into(), ..stat(label, value) }
 }
 
 fn gib(bytes: u64) -> f64 {
@@ -185,6 +198,13 @@ fn network_title(wireless: bool) -> &'static str {
 }
 
 pub fn tile(perf: &PerformanceProvider, stats: &SystemStats, device: Device) -> DeviceTile {
+    let keys = match device {
+        Device::Cpu => "cpu;cpu.temp".to_owned(),
+        Device::Memory => "memory;memory.commit".to_owned(),
+        Device::Disk(n) => format!("disk.{n}.active;disk.{n}.read+disk.{n}.write"),
+        Device::Network(i) => format!("net.{i}.receive+net.{i}.send"),
+        Device::Gpu(n) => format!("gpu.{n}.load;gpu.{n}.temp+gpu.{n}.hotspot;gpu.{n}.temp;gpu.{n}.dedicated"),
+    };
     let (kind, title, subtitle, value, history, max) = match device {
         Device::Cpu => {
             let speed = perf.cpu_speed_mhz.map(format::mhz).unwrap_or_default();
@@ -263,6 +283,7 @@ pub fn tile(perf: &PerformanceProvider, stats: &SystemStats, device: Device) -> 
         value: value.into(),
         line: line.into(),
         fill: fill.into(),
+        history: keys.into(),
     }
 }
 
@@ -316,8 +337,8 @@ struct CellGrid {
 
 fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
     let cpu = &perf.machine.cpu;
-    let cell = |label: String, history: &History| {
-        graph_cell(CPU, label, format!("{:.0}%", history.latest().unwrap_or(0.0) * 100.0), history)
+    let cell = |label: String, history: &History, keys: String| {
+        keyed(graph_cell(CPU, label, format!("{:.0}%", history.latest().unwrap_or(0.0) * 100.0), history), keys)
     };
     let temps = perf.cpu_temps.as_ref();
     let span = |items: &[usize]| match (items.first(), items.last()) {
@@ -340,13 +361,21 @@ fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
                 .enumerate()
                 .map(|(i, history)| {
                     let celsius = temps.and_then(|t| t.cores.get(i)).map(|t| format!(" · {t:.0} °C"));
-                    cell(format!("Core {i}{}", celsius.unwrap_or_default()), history)
+                    cell(
+                        format!("Core {i}{}", celsius.unwrap_or_default()),
+                        history,
+                        format!("cpu.core.{i};cpu.core.{i}.temp"),
+                    )
                 })
                 .collect(),
         ),
         CpuGraph::Logical => grid(
             format!("Utilization per logical processor ({} threads)", perf.logical.len()),
-            perf.logical.iter().enumerate().map(|(i, history)| cell(format!("CPU {i}"), history)).collect(),
+            perf.logical
+                .iter()
+                .enumerate()
+                .map(|(i, history)| cell(format!("CPU {i}"), history, String::new()))
+                .collect(),
         ),
         CpuGraph::Ccx => {
             // Name each CCX by its cores, found through its threads.
@@ -384,7 +413,8 @@ fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
                         .iter()
                         .enumerate()
                         .map(|(i, history)| {
-                            cell(format!("CCD {} · cores {}{}", i + 1, span(&cores_of(i)), celsius(i)), history)
+                            let label = format!("CCD {} · cores {}{}", i + 1, span(&cores_of(i)), celsius(i));
+                            cell(label, history, format!("cpu.ccx.{i};cpu.ccd.{}.temp", i + 1))
                         })
                         .collect(),
                 ),
@@ -394,7 +424,9 @@ fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
                         .l3_groups
                         .iter()
                         .enumerate()
-                        .map(|(i, history)| cell(format!("CCX {i} · cores {}", span(&cores_of(i))), history))
+                        .map(|(i, history)| {
+                            cell(format!("CCX {i} · cores {}", span(&cores_of(i))), history, format!("cpu.ccx.{i}"))
+                        })
                         .collect();
                     // Whole CCDs per row, so a box never wraps.
                     let columns = (grid_columns(cells.len()) as usize / per_ccd).max(1) * per_ccd;
@@ -425,7 +457,9 @@ fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
                     perf.l3_groups
                         .iter()
                         .enumerate()
-                        .map(|(i, history)| cell(format!("CCX {i} · cores {}", span(&cores_of(i))), history))
+                        .map(|(i, history)| {
+                            cell(format!("CCX {i} · cores {}", span(&cores_of(i))), history, format!("cpu.ccx.{i}"))
+                        })
                         .collect(),
                 ),
             }
@@ -443,6 +477,7 @@ fn graph_cell(kind: i32, title: String, corner: String, history: &History) -> Gr
         line_a: line_a.into(),
         fill_a: fill_a.into(),
         line_b: Default::default(),
+        history: Default::default(),
     }
 }
 
@@ -451,14 +486,17 @@ fn cpu_detail(perf: &PerformanceProvider, stats: &SystemStats, cpu_graph: CpuGra
     let cache = |bytes: u64| if bytes == 0 { "—".to_owned() } else { format::bytes(bytes) };
     let grid = cpu_cells(perf, cpu_graph);
     let big = if grid.cells.is_empty() {
-        vec![graph("cpu.utilization", CPU, "% Utilization over 60 seconds", "100%".into(), &perf.cpu, 1.0, None)]
+        vec![keyed(
+            graph("cpu.utilization", CPU, "% Utilization over 60 seconds", "100%".into(), &perf.cpu, 1.0, None),
+            "cpu",
+        )]
     } else {
         Vec::new()
     };
     let temperature = perf.cpu_temps.as_ref().and_then(cpu_temperature);
     let mut top = vec![
-        stat("Utilization", percent(f64::from(stats.cpu_usage))),
-        stat("Speed", perf.cpu_speed_mhz.map(format::mhz).unwrap_or_else(|| "—".into())),
+        keyed_stat("Utilization", percent(f64::from(stats.cpu_usage)), "cpu"),
+        keyed_stat("Speed", perf.cpu_speed_mhz.map(format::mhz).unwrap_or_else(|| "—".into()), "cpu.speed"),
     ];
     let mut small = Vec::new();
     if let Some(celsius) = temperature {
@@ -467,9 +505,11 @@ fn cpu_detail(perf: &PerformanceProvider, stats: &SystemStats, cpu_graph: CpuGra
             Some(t) if t.package_c.is_some() && t.cores.is_empty() => "Temperature (Tctl)",
             _ => "Temperature",
         };
-        top.push(stat(label, format!("{celsius:.0} °C")));
+        top.push(keyed_stat(label, format!("{celsius:.0} °C"), "cpu.temp"));
         let ceiling = nice_ceiling(perf.cpu_temp.peak()).max(100.0);
-        small.push(graph("cpu.temperature", CPU, label, format!("{ceiling:.0} °C"), &perf.cpu_temp, ceiling, None));
+        let temperature =
+            graph("cpu.temperature", CPU, label, format!("{ceiling:.0} °C"), &perf.cpu_temp, ceiling, None);
+        small.push(keyed(temperature, "cpu.temp"));
     }
     let bottom = vec![
         stat("Processes", format::count(stats.processes as u64)),
@@ -481,7 +521,11 @@ fn cpu_detail(perf: &PerformanceProvider, stats: &SystemStats, cpu_graph: CpuGra
     if let Some(temps) = perf.cpu_temps.as_ref() {
         // Number CCDs by position: their sensor slots can be sparse.
         for (n, (_, celsius)) in temps.ccds.iter().enumerate() {
-            sensors.push(stat(&format!("CCD {}", n + 1), format!("{celsius:.0} °C")));
+            sensors.push(keyed_stat(
+                &format!("CCD {}", n + 1),
+                format!("{celsius:.0} °C"),
+                format!("cpu.ccd.{}.temp", n + 1),
+            ));
         }
         if let (Some(hottest), Some(coolest)) =
             (temps.cores.iter().copied().reduce(f32::max), temps.cores.iter().copied().reduce(f32::min))
@@ -536,27 +580,36 @@ fn memory_detail(perf: &PerformanceProvider) -> Detail {
     Detail {
         title: "Memory".into(),
         model: format!("{} {kind}", format::bytes(installed)).trim().to_owned(),
-        big: vec![graph(
-            "memory.usage",
-            MEMORY,
-            "Memory usage",
-            format::bytes(memory.physical_total),
-            &perf.memory_used,
-            memory.physical_total as f64,
-            None,
+        big: vec![keyed(
+            graph(
+                "memory.usage",
+                MEMORY,
+                "Memory usage",
+                format::bytes(memory.physical_total),
+                &perf.memory_used,
+                memory.physical_total as f64,
+                None,
+            ),
+            "memory",
         )],
-        small: vec![graph(
+        small: vec![keyed(
+            graph(
+                "memory.commit",
+                MEMORY,
+                "Committed",
+                format::bytes(memory.commit_limit),
+                &perf.commit,
+                memory.commit_limit as f64,
+                None,
+            ),
             "memory.commit",
-            MEMORY,
-            "Committed",
-            format::bytes(memory.commit_limit),
-            &perf.commit,
-            memory.commit_limit as f64,
-            None,
         )],
-        top: vec![stat("In use", format::bytes(used)), stat("Available", format::bytes(memory.physical_available))],
+        top: vec![
+            keyed_stat("In use", format::bytes(used), "memory"),
+            stat("Available", format::bytes(memory.physical_available)),
+        ],
         bottom: vec![
-            stat("Committed", used_of(memory.commit_total, memory.commit_limit)),
+            keyed_stat("Committed", used_of(memory.commit_total, memory.commit_limit), "memory.commit"),
             stat("Cached", format::bytes(memory.system_cache)),
             stat("Paged pool", format::bytes(memory.paged_pool)),
             stat("Non-paged pool", format::bytes(memory.nonpaged_pool)),
@@ -586,21 +639,30 @@ fn disk_detail(perf: &PerformanceProvider, number: u32) -> Detail {
     Detail {
         title: disk_title(number, &latest.letters),
         model: latest.info.model.clone(),
-        big: vec![graph("disk.active", DISK, "Active time", "100%".into(), &disk.active, 1.0, None)],
-        small: vec![graph(
-            "disk.transfer",
-            DISK,
-            "Disk transfer rate (read, write)",
-            format!("{}/s", format::bytes(max as u64)),
-            &disk.read,
-            max,
-            Some(&disk.write),
+        big: vec![keyed(
+            graph("disk.active", DISK, "Active time", "100%".into(), &disk.active, 1.0, None),
+            format!("disk.{number}.active"),
+        )],
+        small: vec![keyed(
+            graph(
+                "disk.transfer",
+                DISK,
+                "Disk transfer rate (read, write)",
+                format!("{}/s", format::bytes(max as u64)),
+                &disk.read,
+                max,
+                Some(&disk.write),
+            ),
+            format!("disk.{number}.read+disk.{number}.write;disk.{number}.read;disk.{number}.write"),
         )],
         top: vec![
-            stat("Active time", format!("{:.0}%", latest.active)),
+            keyed_stat("Active time", format!("{:.0}%", latest.active), format!("disk.{number}.active")),
             stat("Average response time", format!("{:.1} ms", latest.response_ms)),
         ],
-        bottom: vec![stat("Read speed", rate(latest.read)), stat("Write speed", rate(latest.write))],
+        bottom: vec![
+            keyed_stat("Read speed", rate(latest.read), format!("disk.{number}.read")),
+            keyed_stat("Write speed", rate(latest.write), format!("disk.{number}.write")),
+        ],
         info: vec![
             stat("Capacity", latest.info.size.map(format::bytes).unwrap_or_else(|| "—".into())),
             stat("Type", latest.info.kind()),
@@ -631,18 +693,21 @@ fn network_detail(perf: &PerformanceProvider, index: u32) -> Detail {
     Detail {
         title: network_title(adapter.wireless).into(),
         model: adapter.description.clone(),
-        big: vec![graph(
-            "network.throughput",
-            NETWORK,
-            "Throughput (receive, send)",
-            format::bits_per_second(max),
-            &net.receive,
-            max,
-            Some(&net.send),
+        big: vec![keyed(
+            graph(
+                "network.throughput",
+                NETWORK,
+                "Throughput (receive, send)",
+                format::bits_per_second(max),
+                &net.receive,
+                max,
+                Some(&net.send),
+            ),
+            format!("net.{index}.receive+net.{index}.send;net.{index}.receive;net.{index}.send"),
         )],
         top: vec![
-            stat("Send", format::bits_per_second(net.send_rate)),
-            stat("Receive", format::bits_per_second(net.receive_rate)),
+            keyed_stat("Send", format::bits_per_second(net.send_rate), format!("net.{index}.send")),
+            keyed_stat("Receive", format::bits_per_second(net.receive_rate), format!("net.{index}.receive")),
         ],
         info: vec![
             stat("Adapter name", adapter.alias.clone()),
@@ -664,7 +729,10 @@ fn gpu_detail(perf: &PerformanceProvider, index: usize) -> Detail {
         .iter()
         .map(|(label, history)| {
             let now = latest.engines.iter().find(|(l, _)| l == label).map_or(0.0, |(_, v)| *v);
-            graph("gpu.engines", GPU, label, format!("{now:.0}%"), history, 1.0, None)
+            keyed(
+                graph("gpu.engines", GPU, label, format!("{now:.0}%"), history, 1.0, None),
+                format!("gpu.{index}.engine.{}", slug(label)),
+            )
         })
         .collect();
     let pairs = engine_graphs
@@ -680,39 +748,52 @@ fn gpu_detail(perf: &PerformanceProvider, index: usize) -> Detail {
     let vendor = latest.vendor.unwrap_or_default();
 
     let mut small = vec![
-        graph(
-            "gpu.dedicated",
-            GPU,
-            "Dedicated GPU memory",
-            format::bytes(info.dedicated_memory),
-            &gpu.dedicated,
-            info.dedicated_memory.max(1) as f64,
-            None,
+        keyed(
+            graph(
+                "gpu.dedicated",
+                GPU,
+                "Dedicated GPU memory",
+                format::bytes(info.dedicated_memory),
+                &gpu.dedicated,
+                info.dedicated_memory.max(1) as f64,
+                None,
+            ),
+            format!("gpu.{index}.dedicated"),
         ),
-        graph(
-            "gpu.shared",
-            GPU,
-            "Shared GPU memory",
-            format::bytes(info.shared_memory),
-            &gpu.shared,
-            info.shared_memory.max(1) as f64,
-            None,
+        keyed(
+            graph(
+                "gpu.shared",
+                GPU,
+                "Shared GPU memory",
+                format::bytes(info.shared_memory),
+                &gpu.shared,
+                info.shared_memory.max(1) as f64,
+                None,
+            ),
+            format!("gpu.{index}.shared"),
         ),
     ];
     if !gpu.temperature.is_empty() {
         let ceiling = nice_ceiling(gpu.hotspot.peak().max(gpu.temperature.peak())).max(100.0);
         let title = if gpu.hotspot.is_empty() { "Temperature" } else { "Temperature (edge, hotspot)" };
         let second = (!gpu.hotspot.is_empty()).then_some(&gpu.hotspot);
-        small.push(graph("gpu.temperature", GPU, title, format!("{ceiling:.0} °C"), &gpu.temperature, ceiling, second));
+        let keys = if gpu.hotspot.is_empty() {
+            format!("gpu.{index}.temp")
+        } else {
+            format!("gpu.{index}.temp+gpu.{index}.hotspot;gpu.{index}.temp;gpu.{index}.hotspot")
+        };
+        let temperature =
+            graph("gpu.temperature", GPU, title, format!("{ceiling:.0} °C"), &gpu.temperature, ceiling, second);
+        small.push(keyed(temperature, keys));
     }
 
     let mut bottom = vec![
         stat("GPU memory", used_of(latest.dedicated_used + latest.shared_used, total)),
-        stat("GPU temperature", celsius(latest.edge_c())),
+        keyed_stat("GPU temperature", celsius(latest.edge_c()), format!("gpu.{index}.temp")),
     ];
     if latest.vendor.is_some() {
-        bottom.push(stat("Hotspot", celsius(vendor.hotspot_c)));
-        bottom.push(stat("Memory temp", celsius(vendor.memory_c)));
+        bottom.push(keyed_stat("Hotspot", celsius(vendor.hotspot_c), format!("gpu.{index}.hotspot")));
+        bottom.push(keyed_stat("Memory temp", celsius(vendor.memory_c), format!("gpu.{index}.memory-temp")));
     }
 
     let mut details = vec![
@@ -739,9 +820,17 @@ fn gpu_detail(perf: &PerformanceProvider, index: usize) -> Detail {
         pairs,
         small,
         top: vec![
-            stat("Utilization", format!("{:.0}%", gpu.utilization_now())),
-            stat("Dedicated GPU memory", used_of(latest.dedicated_used, info.dedicated_memory)),
-            stat("Shared GPU memory", used_of(latest.shared_used, info.shared_memory)),
+            keyed_stat("Utilization", format!("{:.0}%", gpu.utilization_now()), format!("gpu.{index}.load")),
+            keyed_stat(
+                "Dedicated GPU memory",
+                used_of(latest.dedicated_used, info.dedicated_memory),
+                format!("gpu.{index}.dedicated"),
+            ),
+            keyed_stat(
+                "Shared GPU memory",
+                used_of(latest.shared_used, info.shared_memory),
+                format!("gpu.{index}.shared"),
+            ),
         ],
         bottom,
         info: details
