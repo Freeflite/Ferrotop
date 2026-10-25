@@ -168,6 +168,8 @@ export component MainWindow inherits Window {
     in property <bool> history-installed;
     // Installing or removing the service.
     in property <bool> history-busy;
+    // The installed service is another version of Ferrotop.
+    in property <bool> history-outdated;
     in-out property <string> tools-target;
 
     // Dialogs.
@@ -1306,7 +1308,7 @@ export component MainWindow inherits Window {
                                     alignment: center;
 
                                     Button {
-                                        text: root.history-busy ? "Working…" : root.history-installed ? "Stop recording…" : "Record history…";
+                                        text: root.history-busy ? "Working…" : root.history-outdated ? "Update service…" : root.history-installed ? "Stop recording…" : "Record history…";
                                         enabled: !root.history-busy;
                                         clicked => {
                                             root.history-service-clicked();

@@ -72,6 +72,8 @@ pub struct HistoryPage {
     loaded_at: Option<Instant>,
     seconds: usize,
     service: ServiceState,
+    /// The installed service's version, when it isn't this one.
+    outdated: Option<String>,
     busy: bool,
 }
 
@@ -85,6 +87,7 @@ impl Default for HistoryPage {
             loaded_at: None,
             seconds: 0,
             service: ServiceState::NotInstalled,
+            outdated: None,
             busy: false,
         }
     }
@@ -130,12 +133,26 @@ impl App {
         let history = &mut self.pages.history;
         history.service = service_host::state();
         ui.set_history_installed(history.service != ServiceState::NotInstalled);
+        // A newer (or older) Ferrotop than the one the service runs offers to update it.
+        history.outdated = (history.service != ServiceState::NotInstalled)
+            .then(|| {
+                let exe = service_host::service_exe_path().ok()?;
+                ferrotop_sys::version::version_info(&exe.to_string_lossy()).ok()?.product_version
+            })
+            .flatten()
+            .filter(|version| version != env!("CARGO_PKG_VERSION"));
+        ui.set_history_outdated(history.outdated.is_some());
         self.update_history_status(ui);
     }
 
     fn update_history_status(&self, ui: &MainWindow) {
         let history = &self.pages.history;
         let status = match (history.service, history.seconds) {
+            (ServiceState::Running | ServiceState::Stopped | ServiceState::Changing, _)
+                if let Some(version) = &history.outdated =>
+            {
+                format!("The history service is Ferrotop {version}; update it to this version ({}).", env!("CARGO_PKG_VERSION"))
+            }
             (ServiceState::Running, 0) => "Recording. The first figures appear within a few seconds.".to_owned(),
             (ServiceState::Running, _) => format!("Recording around the clock; {} days are kept.", archive::KEEP_DAYS),
             (ServiceState::Stopped | ServiceState::Changing, _) => {
@@ -211,7 +228,9 @@ impl App {
         if history.busy {
             return;
         }
-        let installed = history.service != ServiceState::NotInstalled;
+        // An outdated service is updated in place: installing again replaces it.
+        let installed = history.service != ServiceState::NotInstalled && history.outdated.is_none();
+        let updating = history.outdated.is_some();
         history.busy = true;
         ui.set_history_busy(true);
         let arguments = if installed { "--uninstall-service" } else { "--install-service" };
@@ -220,9 +239,14 @@ impl App {
             move |app, ui, result| {
                 app.pages.history.busy = false;
                 ui.set_history_busy(false);
-                let what = if installed { "Removing the history service" } else { "Installing the history service" };
+                let what = match (installed, updating) {
+                    (true, _) => "Removing the history service",
+                    (false, true) => "Updating the history service",
+                    (false, false) => "Installing the history service",
+                };
                 let message = match result {
                     Ok(0) if installed => "Stopped recording. What was recorded is kept.".to_owned(),
+                    Ok(0) if updating => "Updated the history service.".to_owned(),
                     Ok(0) => "Recording history from now on.".to_owned(),
                     Ok(1) => format!("{what} failed"),
                     Ok(code) => format!("{what} failed: {}", std::io::Error::from_raw_os_error(code as i32)),

@@ -14,9 +14,11 @@ const MAX_VERSION_INFO: u32 = 4 * 1024 * 1024;
 pub struct VersionInfo {
     pub description: Option<String>,
     pub company: Option<String>,
+    pub product_version: Option<String>,
 }
 
-/// Reads `FileDescription` and `CompanyName` from an executable's version resource.
+/// Reads `FileDescription`, `CompanyName` and `ProductVersion` from an executable's version
+/// resource.
 pub fn version_info(path: &str) -> Result<VersionInfo> {
     let path = wide(path);
     let mut ignored = 0u32;
@@ -53,7 +55,11 @@ pub fn version_info(path: &str) -> Result<VersionInfo> {
             Some(utf16_until_nul(&raw).trim().to_owned()).filter(|s| !s.is_empty())
         })
     };
-    Ok(VersionInfo { description: string("FileDescription"), company: string("CompanyName") })
+    Ok(VersionInfo {
+        description: string("FileDescription"),
+        company: string("CompanyName"),
+        product_version: string("ProductVersion"),
+    })
 }
 
 /// Looks up `sub_block`, returning a copy of the bytes it points at inside the block.
@@ -84,6 +90,6 @@ mod tests {
         let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
         let info = version_info(&format!(r"{root}\System32\ntoskrnl.exe")).expect("ntoskrnl version info");
         assert!(info.company.as_deref().unwrap_or_default().contains("Microsoft"), "{info:?}");
-        assert!(info.description.is_some(), "{info:?}");
+        assert!(info.description.is_some() && info.product_version.is_some(), "{info:?}");
     }
 }
