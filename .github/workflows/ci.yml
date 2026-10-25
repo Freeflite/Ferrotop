@@ -120,6 +120,12 @@ jobs:
           Start-Sleep -Seconds 15
           & ./target/release/examples/history_check.exe
           if ($LASTEXITCODE -ne 0) { throw 'history check failed' }
+          # An elevated window's own trace must leave the service's running.
+          & ./target/release/examples/history_check.exe --window-trace
+          if ($LASTEXITCODE -ne 0) { throw 'history check after a window trace failed' }
+          $sessions = logman query -ets | Out-String
+          if ($sessions -notmatch 'Ferrotop history service I/O trace') { throw "the service's trace stopped: $sessions" }
+          if ($sessions -match 'Ferrotop I/O trace') { throw 'the window trace was left running' }
           $uninstall = Start-Process -FilePath $exe -ArgumentList '--uninstall-service' -Wait -PassThru
           if ($uninstall.ExitCode -ne 0) { throw "uninstall failed with exit code $($uninstall.ExitCode)" }
           if (Get-Service Ferrotop -ErrorAction SilentlyContinue) { throw 'the service is still installed' }

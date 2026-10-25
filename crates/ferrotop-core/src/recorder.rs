@@ -7,6 +7,7 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ferrotop_sys::etw::TraceRole;
 use ferrotop_sys::live::{LiveProcess, LivePublisher, LiveSnapshot};
 
 use crate::activity::ActivityTracer;
@@ -23,7 +24,7 @@ const _: () = assert!(TOP_CPU + TOP_DISK + TOP_NETWORK <= MAX_MINUTE_ENTRIES);
 /// Records into `dir` until `wait` (given how long until the next second) returns `true`.
 pub fn run(dir: &Path, mut wait: impl FnMut(Duration) -> bool) -> io::Result<()> {
     // The service is the source of the live figures, never a reader of them.
-    let tracer = ActivityTracer::start(false);
+    let tracer = ActivityTracer::start(TraceRole::Service);
     // Without the section, windows just don't get live figures; history still works.
     let live = LivePublisher::create().ok();
     let mut processes = ProcessProvider::new();

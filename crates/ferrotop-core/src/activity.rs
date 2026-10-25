@@ -6,7 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ferrotop_sys::etw::{self, IoTrace};
+use ferrotop_sys::etw::{self, IoTrace, TraceRole};
 use ferrotop_sys::live::{LiveReader, LiveSnapshot};
 use ferrotop_sys::process::ProcessInfo;
 
@@ -77,15 +77,16 @@ pub struct ActivityTracer {
 }
 
 impl ActivityTracer {
-    /// Starts tracing if it can, or else (with `use_service`) relies on the history service.
-    /// Elevation doesn't change while a process runs, so there's no point retrying the trace.
-    pub fn start(use_service: bool) -> Self {
-        let (trace, status) = match IoTrace::start() {
+    /// Starts tracing if it can. A window that can't relies on the history service instead;
+    /// the service never reads its own figures. Elevation doesn't change while a process runs,
+    /// so there's no point retrying the trace.
+    pub fn start(role: TraceRole) -> Self {
+        let (trace, status) = match IoTrace::start(role) {
             Ok(trace) => (Some(trace), ActivityStatus::Running),
             Err(error) if etw::is_access_denied(&error) => (None, ActivityStatus::NeedsAdmin),
             Err(_) => (None, ActivityStatus::Failed),
         };
-        let live = (trace.is_none() && use_service).then(LiveSource::default);
+        let live = (trace.is_none() && role == TraceRole::Window).then(LiveSource::default);
         Self { trace, status: Cell::new(status), live, last_take: Cell::new(None) }
     }
 
@@ -178,7 +179,7 @@ mod tests {
 
     #[test]
     fn starts_or_says_why_not() {
-        let tracer = ActivityTracer::start(false);
+        let tracer = ActivityTracer::start(TraceRole::Service);
         assert_eq!(tracer.take(&[]).is_some(), tracer.status() == ActivityStatus::Running);
     }
 }

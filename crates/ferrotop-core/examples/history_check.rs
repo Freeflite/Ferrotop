@@ -1,12 +1,21 @@
 //! Checks a running history service from the outside, as a Ferrotop window would: prints what
 //! the live section and the history files hold, and fails if either is missing or stale.
 //! `cargo run -p ferrotop-core --example history_check` (CI runs it after installing the service).
+//! With `--window-trace` it first runs a window's own kernel trace for a moment, as an elevated
+//! Ferrotop would, which must leave the service's trace alone.
 
 use ferrotop_core::archive;
 use ferrotop_sys::live::LiveReader;
 use ferrotop_sys::service_host;
 
 fn main() {
+    if std::env::args().any(|a| a == "--window-trace") {
+        let trace = ferrotop_sys::etw::IoTrace::start(ferrotop_sys::etw::TraceRole::Window)
+            .expect("window trace (needs admin)");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        drop(trace);
+        println!("ran and stopped a window trace");
+    }
     let snapshot = LiveReader::open().ok().and_then(|reader| reader.read());
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
     match &snapshot {

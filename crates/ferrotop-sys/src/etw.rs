@@ -23,9 +23,30 @@ use windows_sys::core::GUID;
 
 use crate::{Error, Result};
 
-const SESSION_NAME: &str = "Ferrotop I/O trace";
-/// Identifies Ferrotop's session; any fixed GUID will do.
-const SESSION_GUID: GUID = GUID::from_u128(0x9e2f4a1c_7b3d_4e85_a6f0_3c8d2b1e5f47);
+/// Who's tracing. The window and the history service each get their own session, so neither
+/// mistakes the other's for one left behind by a crash and stops it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceRole {
+    Window,
+    Service,
+}
+
+impl TraceRole {
+    fn session_name(self) -> &'static str {
+        match self {
+            TraceRole::Window => "Ferrotop I/O trace",
+            TraceRole::Service => "Ferrotop history service I/O trace",
+        }
+    }
+
+    /// Identifies the session; any fixed GUID will do, one per role.
+    fn session_guid(self) -> GUID {
+        match self {
+            TraceRole::Window => GUID::from_u128(0x9e2f4a1c_7b3d_4e85_a6f0_3c8d2b1e5f47),
+            TraceRole::Service => GUID::from_u128(0x4c7d1f90_2e6b_4a83_9d15_b8e0a3f6c271),
+        }
+    }
+}
 /// The kernel's classic providers.
 const DISK_IO: u128 = 0x3d6fa8d4_fe05_11d0_9dda_00c04fd7ba7c;
 const TCP_IP: u128 = 0x9a280ac0_c8e0_11d1_84e2_00c04fb998a2;
@@ -118,15 +139,15 @@ struct SessionProperties {
 }
 
 impl SessionProperties {
-    fn new() -> Box<Self> {
+    fn new(role: TraceRole) -> Box<Self> {
         let mut name = [0u16; 64];
-        for (slot, unit) in name.iter_mut().zip(SESSION_NAME.encode_utf16()) {
+        for (slot, unit) in name.iter_mut().take(63).zip(role.session_name().encode_utf16()) {
             *slot = unit;
         }
         let mut session = Box::new(Self { properties: EVENT_TRACE_PROPERTIES::default(), name });
         let properties = &mut session.properties;
         properties.Wnode.BufferSize = size_of::<Self>() as u32;
-        properties.Wnode.Guid = SESSION_GUID;
+        properties.Wnode.Guid = role.session_guid();
         // Timestamps from the performance counter.
         properties.Wnode.ClientContext = 1;
         properties.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
@@ -142,6 +163,7 @@ impl SessionProperties {
 /// A running trace. Dropping it stops the session.
 #[derive(Debug)]
 pub struct IoTrace {
+    role: TraceRole,
     /// The session's `CONTROLTRACE_HANDLE` and the consumer's `PROCESSTRACE_HANDLE` values.
     session: u64,
     consumer: u64,
@@ -151,16 +173,16 @@ pub struct IoTrace {
 
 impl IoTrace {
     /// Starts the trace. Fails with an access-denied error unless run as administrator.
-    pub fn start() -> Result<Self> {
-        let mut properties = SessionProperties::new();
+    pub fn start(role: TraceRole) -> Result<Self> {
+        let mut properties = SessionProperties::new(role);
         let mut session = CONTROLTRACE_HANDLE::default();
         // SAFETY: `properties` is a correctly sized EVENT_TRACE_PROPERTIES with the name after
         // it, and both pointers are valid for the call.
         let mut status = unsafe { StartTraceW(&mut session, properties.name.as_ptr(), &mut properties.properties) };
         if status == ERROR_ALREADY_EXISTS {
             // Left over from a Ferrotop that didn't exit cleanly: stop it and start afresh.
-            stop_session(0);
-            properties = SessionProperties::new();
+            stop_session(role, 0);
+            properties = SessionProperties::new(role);
             // SAFETY: as above.
             status = unsafe { StartTraceW(&mut session, properties.name.as_ptr(), &mut properties.properties) };
         }
@@ -180,7 +202,7 @@ impl IoTrace {
         let consumer = unsafe { OpenTraceW(&mut logfile) };
         if consumer.Value == INVALID_PROCESSTRACE_HANDLE {
             let error = Error::last_win32("OpenTraceW");
-            stop_session(session.Value);
+            stop_session(role, session.Value);
             return Err(error);
         }
 
@@ -198,11 +220,11 @@ impl IoTrace {
             Ok(worker) => worker,
             Err(_) => {
                 close_consumer(consumer.Value);
-                stop_session(session.Value);
+                stop_session(role, session.Value);
                 return Err(Error::Malformed { call: "spawning the ETW consumer thread" });
             }
         };
-        Ok(Self { session: session.Value, consumer: consumer.Value, totals, worker: Some(worker) })
+        Ok(Self { role, session: session.Value, consumer: consumer.Value, totals, worker: Some(worker) })
     }
 
     /// Takes the byte counts gathered since the last call.
@@ -218,7 +240,7 @@ pub fn is_access_denied(error: &Error) -> bool {
 
 impl Drop for IoTrace {
     fn drop(&mut self) {
-        stop_session(self.session);
+        stop_session(self.role, self.session);
         close_consumer(self.consumer);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -226,9 +248,9 @@ impl Drop for IoTrace {
     }
 }
 
-/// Stops Ferrotop's session; with a zero handle, finds it by name.
-fn stop_session(session: u64) {
-    let mut properties = SessionProperties::new();
+/// Stops the role's session; with a zero handle, finds it by name.
+fn stop_session(role: TraceRole, session: u64) {
+    let mut properties = SessionProperties::new(role);
     let session = CONTROLTRACE_HANDLE { Value: session };
     // SAFETY: as in `start`; stopping fills `properties` with the session's final statistics.
     unsafe { ControlTraceW(session, properties.name.as_ptr(), &mut properties.properties, EVENT_TRACE_CONTROL_STOP) };
@@ -314,12 +336,14 @@ mod tests {
     #[test]
     fn guids_round_trip() {
         assert_eq!(guid_value(&GUID::from_u128(DISK_IO)), DISK_IO);
-        assert_eq!(guid_value(&SESSION_GUID), 0x9e2f4a1c_7b3d_4e85_a6f0_3c8d2b1e5f47);
+        assert_eq!(guid_value(&TraceRole::Window.session_guid()), 0x9e2f4a1c_7b3d_4e85_a6f0_3c8d2b1e5f47);
+        assert_ne!(TraceRole::Window.session_guid().data1, TraceRole::Service.session_guid().data1);
+        assert_ne!(TraceRole::Window.session_name(), TraceRole::Service.session_name());
     }
 
     #[test]
     fn counts_this_process_or_needs_admin() {
-        let trace = match IoTrace::start() {
+        let trace = match IoTrace::start(TraceRole::Window) {
             Ok(trace) => trace,
             Err(error) => return assert!(is_access_denied(&error), "{error}"),
         };

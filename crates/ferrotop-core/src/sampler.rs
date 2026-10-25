@@ -8,6 +8,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use ferrotop_sys::etw::TraceRole;
+
 use crate::activity::ActivityTracer;
 use crate::details::DetailsCollector;
 use crate::perf::{PerfCollector, PerfSample};
@@ -50,7 +52,7 @@ impl Sampler {
         let mut sampler = Self { processes, devices, workers: Vec::new() };
         sampler.workers.push(thread::Builder::new().name("ferrotop-sampler".into()).spawn(move || {
             let mut collector = DetailsCollector::new();
-            let tracer = ActivityTracer::start(true);
+            let tracer = ActivityTracer::start(TraceRole::Window);
             loop {
                 deliver(Sample::capture(&mut collector, &tracer));
                 if !wait(&process_inbox, interval) {
