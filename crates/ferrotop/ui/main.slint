@@ -64,6 +64,8 @@ export component MainWindow inherits Window {
     in-out property <bool> show-cpu: true;
     in-out property <bool> show-gpu: true;
     in-out property <bool> show-io: true;
+    in-out property <bool> show-disk;
+    in-out property <bool> show-network;
     in-out property <bool> show-private: true;
     in-out property <bool> show-working-set: true;
     in-out property <bool> show-gpu-dedicated: true;
@@ -246,6 +248,8 @@ export component MainWindow inherits Window {
     property <length> cpu-width: root.show-cpu ? 56px : 0px;
     property <length> gpu-width: root.show-gpu ? 52px : 0px;
     property <length> io-width: root.show-io ? 78px : 0px;
+    property <length> disk-width: root.show-disk ? 78px : 0px;
+    property <length> network-width: root.show-network ? 78px : 0px;
     property <length> private-width: root.show-private ? 84px : 0px;
     property <length> working-set-width: root.show-working-set ? 84px : 0px;
     property <length> gpu-dedicated-width: root.show-gpu-dedicated ? 86px : 0px;
@@ -255,7 +259,7 @@ export component MainWindow inherits Window {
     property <length> user-width: root.show-user ? 130px : 0px;
     property <length> description-width: root.show-description ? 170px : 0px;
     property <length> signer-width: root.show-signer ? 170px : 0px;
-    property <length> fixed-width: root.pid-width + root.cpu-width + root.gpu-width + root.io-width + root.private-width + root.working-set-width + root.gpu-dedicated-width + root.gpu-shared-width + root.threads-width + root.handles-width + root.user-width + root.description-width + root.signer-width;
+    property <length> fixed-width: root.pid-width + root.cpu-width + root.gpu-width + root.io-width + root.disk-width + root.network-width + root.private-width + root.working-set-width + root.gpu-dedicated-width + root.gpu-shared-width + root.threads-width + root.handles-width + root.user-width + root.description-width + root.signer-width;
     property <length> name-width: max(180px, list.visible-width - root.fixed-width);
     property <ColumnWidths> widths: {
         name: root.name-width,
@@ -263,6 +267,8 @@ export component MainWindow inherits Window {
         cpu: root.cpu-width,
         gpu: root.gpu-width,
         io: root.io-width,
+        disk: root.disk-width,
+        network: root.network-width,
         private: root.private-width,
         working-set: root.working-set-width,
         gpu-dedicated: root.gpu-dedicated-width,
@@ -278,7 +284,9 @@ export component MainWindow inherits Window {
     property <length> cpu-x: root.pid-x + root.pid-width;
     property <length> gpu-x: root.cpu-x + root.cpu-width;
     property <length> io-x: root.gpu-x + root.gpu-width;
-    property <length> private-x: root.io-x + root.io-width;
+    property <length> disk-x: root.io-x + root.io-width;
+    property <length> network-x: root.disk-x + root.disk-width;
+    property <length> private-x: root.network-x + root.network-width;
     property <length> working-set-x: root.private-x + root.private-width;
     property <length> gpu-dedicated-x: root.working-set-x + root.working-set-width;
     property <length> gpu-shared-x: root.gpu-dedicated-x + root.gpu-dedicated-width;
@@ -541,6 +549,28 @@ export component MainWindow inherits Window {
                                 ascending: root.sort-ascending;
                                 clicked => {
                                     root.sort-by(4);
+                                }
+                            }
+
+                            if root.show-disk: HeaderCell {
+                                x: root.disk-x;
+                                width: root.disk-width;
+                                text: "Disk";
+                                sorted: root.sort-column == 15;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(15);
+                                }
+                            }
+
+                            if root.show-network: HeaderCell {
+                                x: root.network-x;
+                                width: root.network-width;
+                                text: "Network";
+                                sorted: root.sort-column == 16;
+                                ascending: root.sort-ascending;
+                                clicked => {
+                                    root.sort-by(16);
                                 }
                             }
 
@@ -1746,7 +1776,7 @@ export component MainWindow inherits Window {
         x: root.width - 314px;
         y: 60px;
         width: 300px;
-        height: root.page == 0 ? 500px : root.page == 1 ? 170px + root.graph-toggles.length * 28px : 150px;
+        height: root.page == 0 ? 528px : root.page == 1 ? 170px + root.graph-toggles.length * 28px : 150px;
         close-policy: PopupClosePolicy.close-on-click-outside;
 
         Rectangle {
@@ -1870,6 +1900,24 @@ export component MainWindow inherits Window {
                         CheckBox {
                             text: "I/O total";
                             checked <=> root.show-io;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+                    }
+
+                    Row {
+                        CheckBox {
+                            text: "Disk";
+                            checked <=> root.show-disk;
+                            toggled => {
+                                root.columns-changed();
+                            }
+                        }
+
+                        CheckBox {
+                            text: "Network";
+                            checked <=> root.show-network;
                             toggled => {
                                 root.columns-changed();
                             }

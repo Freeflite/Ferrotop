@@ -18,6 +18,7 @@ pub mod desktop;
 pub mod disk;
 pub mod environment;
 mod error;
+pub mod etw;
 pub mod gpu;
 pub mod handles;
 pub mod hardware;

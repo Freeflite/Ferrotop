@@ -20,9 +20,11 @@ structure layouts are ported from System Informer's C sources (MIT). See
 - **Cycle-based CPU usage**, System Informer's default and more accurate than time sampling,
   including the final cycles of processes that exit between samples, with an **Interrupts** row
   for CPU spent in DPCs and interrupts.
-- Columns for **CPU**, **GPU**, **I/O rate**, **private bytes**, **working set**, **GPU memory**
-  (dedicated and shared), **threads**, **handles**, **user name**, **description** and
-  **verified signer** (Authenticode, embedded or catalog-signed). Pick them from the View menu.
+- Columns for **CPU**, **GPU**, **I/O rate**, **disk** and **network** activity, **private
+  bytes**, **working set**, **GPU memory** (dedicated and shared), **threads**, **handles**,
+  **user name**, **description** and **verified signer** (Authenticode, embedded or
+  catalog-signed). Pick them from the View menu. Disk and network come from a kernel event trace
+  (as in Resource Monitor), so they need Ferrotop to run as administrator.
 - **Highlighting** like System Informer's: your processes, your elevated processes, service
   hosts, system-account processes, and processes that just started or exited. Suspended
   processes are marked.

@@ -4,6 +4,7 @@
 //! crate is plain data processing that can be unit-tested with synthetic samples.
 #![forbid(unsafe_code)]
 
+pub mod activity;
 pub mod delta;
 pub mod details;
 pub mod find;

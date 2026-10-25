@@ -7,6 +7,8 @@ export struct ProcessRow {
     cpu: string,
     gpu: string,
     io-rate: string,
+    disk: string,
+    network: string,
     private-bytes: string,
     working-set: string,
     gpu-dedicated: string,
@@ -32,6 +34,8 @@ export struct ColumnWidths {
     cpu: length,
     gpu: length,
     io: length,
+    disk: length,
+    network: length,
     private: length,
     working-set: length,
     gpu-dedicated: length,
@@ -288,6 +292,18 @@ export component ProcessRowView inherits Rectangle {
             width: root.widths.io;
             text: root.item.io-rate;
             text-color: Theme.disk-color;
+        }
+
+        Cell {
+            width: root.widths.disk;
+            text: root.item.disk;
+            text-color: Theme.disk-color;
+        }
+
+        Cell {
+            width: root.widths.network;
+            text: root.item.network;
+            text-color: Theme.network-color;
         }
 
         Cell {

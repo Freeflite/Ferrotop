@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use ferrotop_sys::process::ProcessInfo;
 use ferrotop_sys::system::{CpuTimes, CycleTimes, MemoryStatus};
 
+use crate::activity::{ActivityStatus, ActivityTracer, ProcessActivity};
 use crate::delta::Delta;
 use crate::details::{DetailsCollector, FileFacts, ProcessDetails, file_key};
 use crate::history::History;
@@ -69,6 +70,11 @@ pub struct ProcessItem {
     pub io_read_rate: f64,
     pub io_write_rate: f64,
     pub io_other_rate: f64,
+    /// Disk and network bytes per second, from the kernel trace; zero when not tracing.
+    pub disk_read_rate: f64,
+    pub disk_write_rate: f64,
+    pub net_send_rate: f64,
+    pub net_receive_rate: f64,
     /// User, path and version info; `None` until the sampler has looked it up.
     pub details: Option<Arc<ProcessDetails>>,
     /// Names of the services this process hosts.
@@ -91,6 +97,14 @@ pub struct ProcessItem {
 impl ProcessItem {
     pub fn io_total_rate(&self) -> f64 {
         self.io_read_rate + self.io_write_rate + self.io_other_rate
+    }
+
+    pub fn disk_rate(&self) -> f64 {
+        self.disk_read_rate + self.disk_write_rate
+    }
+
+    pub fn network_rate(&self) -> f64 {
+        self.net_send_rate + self.net_receive_rate
     }
 
     pub fn user(&self) -> &str {
@@ -121,12 +135,16 @@ pub struct Sample {
     pub exited_cycles: HashMap<ProcessKey, u64>,
     /// Image-file facts found since the previous sample, keyed by [`file_key`].
     pub files: Vec<(String, Arc<FileFacts>)>,
+    /// Disk and network bytes by process since the previous sample; `None` when not tracing.
+    pub activity: Option<HashMap<u32, ProcessActivity>>,
+    pub activity_status: ActivityStatus,
     pub taken_at: Instant,
 }
 
 impl Sample {
-    /// Captures the OS state, filling in per-process details from `collector`.
-    pub fn capture(collector: &mut DetailsCollector) -> ferrotop_sys::Result<Self> {
+    /// Captures the OS state, filling in per-process details from `collector` and disk and
+    /// network activity from `tracer`.
+    pub fn capture(collector: &mut DetailsCollector, tracer: &ActivityTracer) -> ferrotop_sys::Result<Self> {
         let cpus = ferrotop_sys::system::processor_times()?;
         let cycles = ferrotop_sys::system::cycle_times().ok();
         let processes = ferrotop_sys::process::enumerate()?;
@@ -136,7 +154,21 @@ impl Sample {
         let services = collector.services();
         let exited_cycles = collector.take_exited_cycles();
         let files = collector.take_new_files();
-        Ok(Self { processes, cpus, cycles, memory, details, services, exited_cycles, files, taken_at })
+        let activity = tracer.take(&processes);
+        let activity_status = tracer.status();
+        Ok(Self {
+            processes,
+            cpus,
+            cycles,
+            memory,
+            details,
+            services,
+            exited_cycles,
+            files,
+            activity,
+            activity_status,
+            taken_at,
+        })
     }
 }
 
@@ -153,6 +185,8 @@ pub struct SystemStats {
     pub processes: usize,
     pub threads: u64,
     pub handles: u64,
+    /// Whether per-process disk and network activity is being traced.
+    pub activity: ActivityStatus,
 }
 
 impl SystemStats {
@@ -355,6 +389,10 @@ impl ProcessProvider {
                 io_read_rate: 0.0,
                 io_write_rate: 0.0,
                 io_other_rate: 0.0,
+                disk_read_rate: 0.0,
+                disk_write_rate: 0.0,
+                net_send_rate: 0.0,
+                net_receive_rate: 0.0,
                 details: None,
                 services: Vec::new(),
                 gpu: ProcessGpu::default(),
@@ -393,6 +431,11 @@ impl ProcessProvider {
             item.io_read_rate = per_second(item.io_read.delta);
             item.io_write_rate = per_second(item.io_write.delta);
             item.io_other_rate = per_second(item.io_other.delta);
+            let activity = sample.activity.as_ref().and_then(|a| a.get(&info.pid)).copied().unwrap_or_default();
+            item.disk_read_rate = per_second(activity.disk_read);
+            item.disk_write_rate = per_second(activity.disk_written);
+            item.net_send_rate = per_second(activity.sent);
+            item.net_receive_rate = per_second(activity.received);
 
             item.threads = info.threads;
             item.handles = info.handles;
@@ -423,6 +466,10 @@ impl ProcessProvider {
                 item.io_read_rate = 0.0;
                 item.io_write_rate = 0.0;
                 item.io_other_rate = 0.0;
+                item.disk_read_rate = 0.0;
+                item.disk_write_rate = 0.0;
+                item.net_send_rate = 0.0;
+                item.net_receive_rate = 0.0;
             }
         }
 
@@ -448,6 +495,7 @@ impl ProcessProvider {
             processes: seen.len().saturating_sub(1),
             threads,
             handles,
+            activity: sample.activity_status,
         };
         if !first_run {
             self.cpu_history.push(f64::from(self.stats.cpu_usage));
@@ -490,6 +538,8 @@ mod tests {
             services: Arc::default(),
             exited_cycles: HashMap::new(),
             files: Vec::new(),
+            activity: None,
+            activity_status: ActivityStatus::default(),
             taken_at: start + Duration::from_secs(secs),
         }
     }

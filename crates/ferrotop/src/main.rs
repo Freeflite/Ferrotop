@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ferrotop_core::activity::ActivityStatus;
 use ferrotop_core::details::{Account, file_key};
 use ferrotop_core::format;
 use ferrotop_core::perf::{PerfSample, PerformanceProvider};
@@ -37,7 +38,7 @@ const FIND_PAGE: i32 = 5;
 const TOOLS_PAGE: i32 = 6;
 
 /// Sort columns in the order the UI numbers them (0 = unsorted).
-const UI_COLUMNS: [SortColumn; 15] = [
+const UI_COLUMNS: [SortColumn; 17] = [
     SortColumn::Natural,
     SortColumn::Name,
     SortColumn::Pid,
@@ -53,6 +54,8 @@ const UI_COLUMNS: [SortColumn; 15] = [
     SortColumn::GpuDedicated,
     SortColumn::GpuShared,
     SortColumn::Signer,
+    SortColumn::Disk,
+    SortColumn::Network,
 ];
 
 /// The Performance page's list models, updated in place each refresh.
@@ -309,6 +312,8 @@ impl App {
             cpu: format::cpu(item.cpu_usage).into(),
             gpu: format::cpu((item.gpu.usage / 100.0) as f32).into(),
             io_rate: format::rate(item.io_total_rate()).into(),
+            disk: format::rate(item.disk_rate()).into(),
+            network: format::rate(item.network_rate()).into(),
             private_bytes: format::bytes(item.private_bytes).into(),
             working_set: format::bytes(item.working_set).into(),
             gpu_dedicated: format::bytes(item.gpu.dedicated).into(),
@@ -433,9 +438,20 @@ impl App {
                 fallback(format::bytes(gpu.shared), "0"),
             )
         };
+        let activity = match self.provider.stats().activity {
+            ActivityStatus::Running => format!(
+                "  ·  disk read {} write {}  ·  network sent {} received {}",
+                fallback(format::rate(item.disk_read_rate), "0"),
+                fallback(format::rate(item.disk_write_rate), "0"),
+                fallback(format::rate(item.net_send_rate), "0"),
+                fallback(format::rate(item.net_receive_rate), "0"),
+            ),
+            ActivityStatus::NeedsAdmin => "  ·  disk and network: run as administrator".to_owned(),
+            ActivityStatus::Failed => String::new(),
+        };
         ui.set_detail_usage(
             format!(
-                "CPU {}% (kernel {}%, user {}%)  ·  private {}  ·  working set {}  ·  I/O read {} write {} other {}{gpu}",
+                "CPU {}% (kernel {}%, user {}%)  ·  private {}  ·  working set {}  ·  I/O read {} write {} other {}{activity}{gpu}",
                 fallback(format::cpu(item.cpu_usage), "0"),
                 fallback(format::cpu(item.kernel_usage), "0"),
                 fallback(format::cpu(item.user_usage), "0"),
@@ -595,12 +611,14 @@ impl App {
         }
     }
 
-    fn column_flags(ui: &MainWindow) -> [(SortColumn, bool); 13] {
+    fn column_flags(ui: &MainWindow) -> [(SortColumn, bool); 15] {
         [
             (SortColumn::Pid, ui.get_show_pid()),
             (SortColumn::Cpu, ui.get_show_cpu()),
             (SortColumn::Gpu, ui.get_show_gpu()),
             (SortColumn::IoRate, ui.get_show_io()),
+            (SortColumn::Disk, ui.get_show_disk()),
+            (SortColumn::Network, ui.get_show_network()),
             (SortColumn::PrivateBytes, ui.get_show_private()),
             (SortColumn::WorkingSet, ui.get_show_working_set()),
             (SortColumn::GpuDedicated, ui.get_show_gpu_dedicated()),
@@ -619,6 +637,8 @@ impl App {
         ui.set_show_cpu(shown(SortColumn::Cpu));
         ui.set_show_gpu(shown(SortColumn::Gpu));
         ui.set_show_io(shown(SortColumn::IoRate));
+        ui.set_show_disk(shown(SortColumn::Disk));
+        ui.set_show_network(shown(SortColumn::Network));
         ui.set_show_private(shown(SortColumn::PrivateBytes));
         ui.set_show_working_set(shown(SortColumn::WorkingSet));
         ui.set_show_gpu_dedicated(shown(SortColumn::GpuDedicated));

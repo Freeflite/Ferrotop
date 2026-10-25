@@ -47,6 +47,8 @@ pub struct ProcessInfo {
     pub io_other_ops: u64,
     /// Every thread is suspended (what Task Manager shows as "Suspended").
     pub suspended: bool,
+    /// The process's thread IDs.
+    pub thread_ids: Vec<u32>,
 }
 
 /// Remembers the last buffer size so steady-state refreshes need a single syscall.
@@ -68,7 +70,11 @@ pub(crate) fn parse_processes(bytes: &[u8]) -> Result<Vec<ProcessInfo>> {
         let raw: RawProcess = read_pod(bytes, offset).ok_or_else(malformed)?;
         let name = unicode_string_in(bytes, &raw.image_name).ok_or_else(malformed)?;
         let mut info = ProcessInfo::from_raw(&raw, name).ok_or_else(malformed)?;
-        info.suspended = crate::threads::all_suspended(bytes, offset, &raw);
+        if let Some(threads) = crate::threads::thread_array(bytes, offset, &raw) {
+            // What Task Manager calls "Suspended": every thread is.
+            info.suspended = !threads.is_empty() && threads.iter().all(crate::threads::ThreadInfo::is_suspended);
+            info.thread_ids = threads.iter().map(|thread| thread.tid).collect();
+        }
         processes.push(info);
         match raw.next_entry_offset {
             0 => break,
@@ -106,6 +112,7 @@ impl ProcessInfo {
             io_write_ops: non_negative(raw.write_operation_count),
             io_other_ops: non_negative(raw.other_operation_count),
             suspended: false,
+            thread_ids: Vec::new(),
         })
     }
 }

@@ -92,12 +92,6 @@ pub(crate) fn thread_array(bytes: &[u8], offset: usize, raw: &RawProcess) -> Opt
         .collect()
 }
 
-/// True when every thread in the entry is suspended (how Task Manager decides "Suspended").
-pub(crate) fn all_suspended(bytes: &[u8], offset: usize, raw: &RawProcess) -> bool {
-    thread_array(bytes, offset, raw)
-        .is_some_and(|threads| !threads.is_empty() && threads.iter().all(ThreadInfo::is_suspended))
-}
-
 pub(crate) fn open_thread(tid: u32, access: THREAD_ACCESS_RIGHTS) -> Result<OwnedHandle> {
     // SAFETY: OpenThread has no memory-safety preconditions; it returns null on failure.
     let raw = unsafe { OpenThread(access, 0, tid) };

@@ -35,11 +35,14 @@ pub enum SortColumn {
     GpuShared,
     /// The image file's verified signer.
     Signer,
+    /// Disk and network bytes per second, from the kernel trace.
+    Disk,
+    Network,
 }
 
 impl SortColumn {
     /// Every column except `Natural`, in display order.
-    pub const ALL: [SortColumn; 15] = [
+    pub const ALL: [SortColumn; 17] = [
         SortColumn::Name,
         SortColumn::Pid,
         SortColumn::Cpu,
@@ -54,6 +57,8 @@ impl SortColumn {
         SortColumn::GpuDedicated,
         SortColumn::GpuShared,
         SortColumn::Signer,
+        SortColumn::Disk,
+        SortColumn::Network,
         SortColumn::Natural,
     ];
 
@@ -75,6 +80,8 @@ impl SortColumn {
             SortColumn::GpuDedicated => "gpu-dedicated",
             SortColumn::GpuShared => "gpu-shared",
             SortColumn::Signer => "signer",
+            SortColumn::Disk => "disk",
+            SortColumn::Network => "network",
         }
     }
 
@@ -258,6 +265,8 @@ fn compare(a: &ProcessItem, b: &ProcessItem, sort: SortColumn, order: SortOrder)
         SortColumn::PrivateBytes => a.private_bytes.cmp(&b.private_bytes),
         SortColumn::WorkingSet => a.working_set.cmp(&b.working_set),
         SortColumn::IoRate => a.io_total_rate().total_cmp(&b.io_total_rate()),
+        SortColumn::Disk => a.disk_rate().total_cmp(&b.disk_rate()),
+        SortColumn::Network => a.network_rate().total_cmp(&b.network_rate()),
         SortColumn::Threads => a.threads.cmp(&b.threads),
         SortColumn::Handles => a.handles.cmp(&b.handles),
     };
@@ -299,6 +308,8 @@ mod tests {
             services: Arc::default(),
             exited_cycles: HashMap::new(),
             files: Vec::new(),
+            activity: None,
+            activity_status: crate::activity::ActivityStatus::default(),
             taken_at: Instant::now(),
         });
         provider

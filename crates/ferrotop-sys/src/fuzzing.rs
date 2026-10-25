@@ -40,6 +40,17 @@ pub fn parse(data: &[u8]) {
         }
         _ => {
             let _ = (crate::net::parse_sockaddr(bytes), crate::token::Sid::parse(bytes));
+            // An ETW payload, with the provider and opcode taken from its first two bytes.
+            if let Some((&[provider, opcode], payload)) = bytes.split_first_chunk::<2>() {
+                let provider = [
+                    0x3d6fa8d4_fe05_11d0_9dda_00c04fd7ba7c,
+                    0x9a280ac0_c8e0_11d1_84e2_00c04fb998a2,
+                    0xbf3a50c5_a9c9_4988_a005_2df0b7c80f80,
+                ][usize::from(provider) % 3];
+                for pointer_size in [4, 8] {
+                    let _ = crate::etw::parse_event(provider, opcode, pointer_size, payload);
+                }
+            }
         }
     }
 }

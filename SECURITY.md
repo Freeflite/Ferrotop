@@ -23,8 +23,16 @@ Only the latest release gets security fixes.
   signed modules whose compiled code was checked byte-for-byte against their published source
   (see `crates/ferrotop-sys/modules/pawnio/README.md`). Ferrotop only calls their read functions.
 - **No network access**, except an optional request to LibreHardwareMonitor's web server on
-  `127.0.0.1` for CPU temperatures. No telemetry, no update checks, no symbol downloads (stack
-  walking runs dbghelp in secure mode with a local-only search path).
+  `127.0.0.1` for CPU temperatures, and the ICMP echoes Ping and Trace route send to the address
+  you type (a host name is resolved through Windows first). No telemetry, no update checks, no
+  whois or geolocation lookups, no symbol downloads (stack walking runs dbghelp in secure mode
+  with a local-only search path).
+- **Kernel event tracing, when elevated.** As administrator, Ferrotop starts a private ETW
+  session (`Ferrotop I/O trace`) that counts disk and network bytes per process. It records only
+  event sizes and the issuing thread or process, never contents or addresses, and stops the
+  session when it exits (a session left by a crash is stopped on the next start).
+- **Pick a window** installs a low-level mouse hook only until your next click, which it
+  swallows; it loads nothing into other processes.
 - **Reads, doesn't write, other processes,** except for actions you confirm: end, suspend and
   resume, priority, affinity, service start and stop, and dump files. Each action re-checks the
   process's creation time on the handle it acts through, so a recycled PID can't redirect it.
