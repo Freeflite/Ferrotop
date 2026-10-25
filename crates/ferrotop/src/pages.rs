@@ -141,7 +141,42 @@ impl Pages {
         }
     }
 
-    fn view(&mut self, id: TableId) -> &mut TableView {
+    /// Where each table's column layout is saved; the properties table has one per tab.
+    pub(crate) fn layout_key(&self, id: TableId) -> String {
+        match id {
+            TableId::Services => "services".into(),
+            TableId::Network => "network".into(),
+            TableId::Find => "find".into(),
+            TableId::Properties => {
+                let tab = self.properties_state.as_ref().map_or(Tab::General, |p| p.tab);
+                format!("properties.{}", tab.title().to_lowercase())
+            }
+            TableId::Stack => "stack".into(),
+            TableId::Tools => "tools".into(),
+            TableId::History => "history".into(),
+            TableId::Windows => "windows".into(),
+        }
+    }
+
+    /// Gives every table its saved column layout (at startup).
+    pub(crate) fn apply_layouts(&mut self, layouts: &std::collections::BTreeMap<String, Vec<(String, u32)>>) {
+        for id in [
+            TableId::Services,
+            TableId::Network,
+            TableId::Find,
+            TableId::Stack,
+            TableId::Tools,
+            TableId::History,
+            TableId::Windows,
+        ] {
+            let key = self.layout_key(id);
+            if let Some(layout) = layouts.get(&key) {
+                self.view(id).set_layout(layout.clone());
+            }
+        }
+    }
+
+    pub(crate) fn view(&mut self, id: TableId) -> &mut TableView {
         match id {
             TableId::Services => &mut self.services,
             TableId::Network => &mut self.network,
@@ -180,6 +215,22 @@ pub fn connect(ui: &MainWindow, app: &Rc<RefCell<App>>) {
         app.table_event(ui, id, event, value)
     });
     ui.on_table_event(move |id, kind, value| event((id, kind, value)));
+    let resized = handler(ui, app, |app, ui, (id, position, width): (TableId, i32, f32)| {
+        if let Ok(position) = usize::try_from(position) {
+            app.pages.view(id).resize(position, width);
+            app.pages.push(ui, id);
+            app.save_table_layout(id);
+        }
+    });
+    ui.on_table_column_resized(move |id, position, width| resized((id, position, width)));
+    let dropped = handler(ui, app, |app, ui, (id, position, x): (TableId, i32, f32)| {
+        if let Ok(position) = usize::try_from(position) {
+            app.pages.view(id).move_column(position, x);
+            app.pages.push(ui, id);
+            app.save_table_layout(id);
+        }
+    });
+    ui.on_table_column_dropped(move |id, position, x| dropped((id, position, x)));
     let filter = handler(ui, app, |app, ui, (id, text): (TableId, SharedString)| {
         app.pages.view(id).set_filter(&text);
         app.pages.push(ui, id);
@@ -384,6 +435,10 @@ impl App {
             state.previous_threads = None;
             self.pages.properties.selected = None;
         }
+        // Each tab has its own columns, and so its own saved layout.
+        let key = self.pages.layout_key(TableId::Properties);
+        let layout = self.settings.table_layouts.get(&key).cloned().unwrap_or_default();
+        self.pages.properties.set_layout(layout);
         ui.set_properties_tab(Tab::ALL.iter().position(|t| *t == tab).unwrap_or(0) as i32);
         let actions: &[&str] = match tab {
             Tab::Threads => &["Stack"],
@@ -628,6 +683,15 @@ impl App {
             }
             app.pages.push(ui, TableId::Network);
         });
+    }
+
+    /// Saves a table's column layout after the user resized or moved a column.
+    pub(crate) fn save_table_layout(&mut self, id: TableId) {
+        let key = self.pages.layout_key(id);
+        let layout = self.pages.view(id).layout();
+        self.settings.table_layouts.insert(key, layout);
+        // Saved with the next refresh: resizing reports every movement of the mouse.
+        self.settings_dirty = true;
     }
 
     // ----- Windows -----

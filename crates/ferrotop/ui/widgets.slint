@@ -3,21 +3,8 @@ import { Theme } from "theme.slint";
 export struct ProcessRow {
     icon: image,
     name: string,
-    pid: string,
-    cpu: string,
-    gpu: string,
-    io-rate: string,
-    disk: string,
-    network: string,
-    private-bytes: string,
-    working-set: string,
-    gpu-dedicated: string,
-    gpu-shared: string,
-    threads: string,
-    handles: string,
-    user: string,
-    description: string,
-    signer: string,
+    // The other columns' text, in the order the columns are shown.
+    cells: [string],
     suspended: bool,
     depth: int,
     has-children: bool,
@@ -27,24 +14,23 @@ export struct ProcessRow {
     highlight: int,
 }
 
-// Widths of the process list's columns; 0 hides a column.
-export struct ColumnWidths {
-    name: length,
-    pid: length,
-    cpu: length,
-    gpu: length,
-    io: length,
-    disk: length,
-    network: length,
-    private: length,
-    working-set: length,
-    gpu-dedicated: length,
-    gpu-shared: length,
-    threads: length,
-    handles: length,
-    user: length,
-    description: length,
-    signer: length,
+// A column of the process list besides Name, in display order. `x` is its left edge measured
+// from the end of the Name column; `kind` picks its text color (0 plain, 1 muted, 2 CPU, 3 GPU,
+// 4 disk, 5 network, 6 memory); `sort` is its number for sorting.
+export struct ProcessColumn {
+    title: string,
+    x: length,
+    width: length,
+    numeric: bool,
+    kind: int,
+    sort: int,
+}
+
+// A column the View menu can show or hide.
+export struct ColumnChoice {
+    title: string,
+    shown: bool,
+    index: int,
 }
 
 // A small history graph. Paths are drawn in a 100x100 box and stretched to fit.
@@ -163,6 +149,89 @@ export component HeaderCell inherits Rectangle {
     }
 }
 
+// A column heading that sorts when clicked, moves when dragged sideways, and resizes from the
+// grip on its right edge. Reports drags; the owner decides where the column lands.
+export component ColumnHeader inherits Rectangle {
+    in property <string> text;
+    in property <bool> sorted;
+    in property <bool> ascending;
+    in property <bool> align-right: true;
+    in property <bool> movable: true;
+    callback clicked;
+    // The new width while the grip is dragged.
+    callback resized(length);
+    // Dropped after a sideways drag: how far the heading moved.
+    callback dropped(length);
+
+    property <bool> dragging;
+    property <length> drag-offset;
+    property <length> grip-start-x;
+    property <length> grip-start-width;
+
+    height: 28px;
+
+    header := HeaderCell {
+        x: root.drag-offset;
+        width: root.width;
+        height: root.height;
+        text: root.text;
+        sorted: root.sorted;
+        ascending: root.ascending;
+        align-right: root.align-right;
+        background: root.dragging ? Theme.selection : move.has-hover ? Theme.hover : transparent;
+    }
+
+    move := TouchArea {
+        width: root.width - 6px;
+        mouse-cursor: root.dragging ? MouseCursor.grabbing : MouseCursor.default;
+        moved => {
+            if (root.movable && self.pressed && abs(self.mouse-x - self.pressed-x) > 6px) {
+                root.dragging = true;
+            }
+            if (root.dragging) {
+                root.drag-offset = self.mouse-x - self.pressed-x;
+            }
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.up && event.button == PointerEventButton.left) {
+                if (root.dragging) {
+                    root.dropped(root.drag-offset);
+                } else {
+                    root.clicked();
+                }
+                root.dragging = false;
+                root.drag-offset = 0;
+            }
+        }
+    }
+
+    // The resize grip: a thin strip on the right edge.
+    grip := TouchArea {
+        x: root.width - 6px;
+        width: 8px;
+        mouse-cursor: MouseCursor.col-resize;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.grip-start-x = self.absolute-position.x + self.mouse-x;
+                root.grip-start-width = root.width;
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.resized(max(36px, root.grip-start-width + (self.absolute-position.x + self.mouse-x - root.grip-start-x)));
+            }
+        }
+
+        Rectangle {
+            x: 3px;
+            y: 6px;
+            width: 1px;
+            height: parent.height - 12px;
+            background: grip.has-hover || grip.pressed ? Theme.accent : Theme.border;
+        }
+    }
+}
+
 component Cell inherits Rectangle {
     in property <string> text;
     in property <color> text-color: Theme.text;
@@ -187,13 +256,16 @@ export enum ProcessAction { properties, open-location, end, end-tree, suspend, r
 
 export component ProcessRowView inherits Rectangle {
     in property <ProcessRow> item;
-    in property <ColumnWidths> widths;
+    in property <[ProcessColumn]> columns;
+    in property <length> name-width;
+    in property <length> row-width;
     callback clicked;
     callback toggle;
     callback activated;
     // Right-click, with the pointer's position in window coordinates.
     callback menu-requested(length, length);
 
+    width: root.row-width;
     height: Theme.row-height;
     background: root.item.selected ? Theme.selection
         : root.item.highlight != 0 ? Theme.highlight-color(root.item.highlight)
@@ -221,142 +293,69 @@ export component ProcessRowView inherits Rectangle {
         background: Theme.accent-cool;
     }
 
-    HorizontalLayout {
-        Rectangle {
-            width: root.widths.name;
-            clip: true;
+    Rectangle {
+        x: 0;
+        width: root.name-width;
+        height: parent.height;
+        clip: true;
 
-            HorizontalLayout {
-                padding-left: 4px + root.item.depth * 14px;
-                spacing: 2px;
+        HorizontalLayout {
+            padding-left: 4px + root.item.depth * 14px;
+            spacing: 2px;
 
-                Rectangle {
-                    width: 16px;
+            Rectangle {
+                width: 16px;
 
-                    if root.item.has-children: Text {
-                        text: root.item.expanded ? "▾" : "▸";
-                        color: Theme.muted;
-                        font-size: 13px;
-                        vertical-alignment: center;
-                        horizontal-alignment: center;
-                    }
-
-                    TouchArea {
-                        enabled: root.item.has-children;
-                        clicked => {
-                            root.toggle();
-                        }
-                    }
-                }
-
-                Image {
-                    source: root.item.icon;
-                    width: 16px;
-                    height: 16px;
-                    y: (parent.height - self.height) / 2;
-                    image-rendering: smooth;
-                }
-
-                Rectangle {
-                    width: 3px;
-                }
-
-                Text {
-                    text: root.item.suspended ? root.item.name + "  (suspended)" : root.item.name;
-                    color: root.item.highlight == 2 || root.item.suspended ? Theme.muted : Theme.text;
+                if root.item.has-children: Text {
+                    text: root.item.expanded ? "▾" : "▸";
+                    color: Theme.muted;
+                    font-size: 13px;
                     vertical-alignment: center;
-                    overflow: elide;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    enabled: root.item.has-children;
+                    clicked => {
+                        root.toggle();
+                    }
                 }
             }
-        }
 
-        Cell {
-            width: root.widths.pid;
-            text: root.item.pid;
-            text-color: Theme.muted;
-        }
+            Image {
+                source: root.item.icon;
+                width: 16px;
+                height: 16px;
+                y: (parent.height - self.height) / 2;
+                image-rendering: smooth;
+            }
 
-        Cell {
-            width: root.widths.cpu;
-            text: root.item.cpu;
-            text-color: Theme.cpu-color;
-        }
+            Rectangle {
+                width: 3px;
+            }
 
-        Cell {
-            width: root.widths.gpu;
-            text: root.item.gpu;
-            text-color: Theme.gpu-color;
+            Text {
+                text: root.item.suspended ? root.item.name + "  (suspended)" : root.item.name;
+                color: root.item.highlight == 2 || root.item.suspended ? Theme.muted : Theme.text;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
+    }
 
-        Cell {
-            width: root.widths.io;
-            text: root.item.io-rate;
-            text-color: Theme.disk-color;
-        }
-
-        Cell {
-            width: root.widths.disk;
-            text: root.item.disk;
-            text-color: Theme.disk-color;
-        }
-
-        Cell {
-            width: root.widths.network;
-            text: root.item.network;
-            text-color: Theme.network-color;
-        }
-
-        Cell {
-            width: root.widths.private;
-            text: root.item.private-bytes;
-        }
-
-        Cell {
-            width: root.widths.working-set;
-            text: root.item.working-set;
-        }
-
-        Cell {
-            width: root.widths.gpu-dedicated;
-            text: root.item.gpu-dedicated;
-        }
-
-        Cell {
-            width: root.widths.gpu-shared;
-            text: root.item.gpu-shared;
-        }
-
-        Cell {
-            width: root.widths.threads;
-            text: root.item.threads;
-            text-color: Theme.muted;
-        }
-
-        Cell {
-            width: root.widths.handles;
-            text: root.item.handles;
-            text-color: Theme.muted;
-        }
-
-        Cell {
-            width: root.widths.user;
-            text: root.item.user;
-            align-right: false;
-            text-color: Theme.muted;
-        }
-
-        Cell {
-            width: root.widths.description;
-            text: root.item.description;
-            align-right: false;
-        }
-
-        Cell {
-            width: root.widths.signer;
-            text: root.item.signer;
-            align-right: false;
-            text-color: Theme.muted;
-        }
+    for column[i] in root.columns: Cell {
+        x: root.name-width + column.x;
+        width: column.width;
+        height: parent.height;
+        text: root.item.cells[i];
+        align-right: column.numeric;
+        text-color: column.kind == 1 ? Theme.muted
+            : column.kind == 2 ? Theme.cpu-color
+            : column.kind == 3 ? Theme.gpu-color
+            : column.kind == 4 ? Theme.disk-color
+            : column.kind == 5 ? Theme.network-color
+            : column.kind == 6 ? Theme.memory-color
+            : Theme.text;
     }
 }
 

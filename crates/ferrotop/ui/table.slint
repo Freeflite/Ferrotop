@@ -1,13 +1,15 @@
 import { Button, LineEdit, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { HeaderCell } from "widgets.slint";
+import { ColumnHeader } from "widgets.slint";
 
-// A column of a generic table. `x` is its left edge; the last column stretches to fill.
+// A column of a generic table, in display order. `x` is its left edge; the last column
+// stretches to fill. `index` is the column's place in the data (for sorting).
 export struct TableColumn {
     title: string,
     x: length,
     width: length,
     numeric: bool,
+    index: int,
 }
 
 // Tones: 0 plain, 1 good, 2 muted, 3 warning.
@@ -79,6 +81,9 @@ export component DataTable inherits Rectangle {
     callback row-clicked(int);
     callback row-activated(int);
     callback move-selection(int);
+    // A column (by display position) was resized, or dragged and dropped with its middle at `x`.
+    callback column-resized(int, length);
+    callback column-dropped(int, length);
 
     property <length> row-width: max(root.content-width, list.visible-width);
 
@@ -108,15 +113,21 @@ export component DataTable inherits Rectangle {
                 x: list.content-x;
                 width: root.row-width;
 
-                for column[i] in root.columns: HeaderCell {
+                for column[i] in root.columns: ColumnHeader {
                     x: column.x;
                     width: i == root.columns.length - 1 ? max(column.width, root.row-width - column.x) : column.width;
                     text: column.title;
                     align-right: column.numeric;
-                    sorted: i == root.sort-column;
+                    sorted: column.index == root.sort-column;
                     ascending: root.sort-ascending;
                     clicked => {
-                        root.sort-by(i);
+                        root.sort-by(column.index);
+                    }
+                    resized(width) => {
+                        root.column-resized(i, width);
+                    }
+                    dropped(offset) => {
+                        root.column-dropped(i, column.x + offset + column.width / 2);
                     }
                 }
             }
@@ -210,6 +221,8 @@ export component TablePanel inherits VerticalLayout {
     callback row-activated(int);
     callback move-selection(int);
     callback action(int);
+    callback column-resized(int, length);
+    callback column-dropped(int, length);
 
     public function focus-table() {
         table.focus-table();
@@ -271,6 +284,12 @@ export component TablePanel inherits VerticalLayout {
         }
         move-selection(step) => {
             root.move-selection(step);
+        }
+        column-resized(index, width) => {
+            root.column-resized(index, width);
+        }
+        column-dropped(index, x) => {
+            root.column-dropped(index, x);
         }
     }
 }

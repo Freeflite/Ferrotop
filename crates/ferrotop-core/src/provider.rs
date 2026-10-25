@@ -61,6 +61,8 @@ pub struct ProcessItem {
     pub session_id: u32,
     pub base_priority: i32,
     pub working_set: u64,
+    /// RAM only this process uses (Task Manager's "Memory").
+    pub private_working_set: u64,
     pub private_bytes: u64,
     /// Share of total machine CPU over the last interval, `0.0..=1.0`.
     pub cpu_usage: f32,
@@ -416,6 +418,7 @@ impl ProcessProvider {
                 session_id: info.session_id,
                 base_priority: 0,
                 working_set: 0,
+                private_working_set: 0,
                 private_bytes: 0,
                 cpu_usage: 0.0,
                 kernel_usage: 0.0,
@@ -476,6 +479,7 @@ impl ProcessProvider {
             item.base_priority = info.base_priority;
             item.working_set = info.working_set;
             item.private_bytes = info.private_bytes;
+            item.private_working_set = info.private_working_set;
             if let Some(details) = sample.details.get(&key) {
                 item.details = Some(Arc::clone(details));
             }

@@ -16,7 +16,7 @@ use crate::provider::{ProcessItem, ProcessKey};
 /// PID of the System process, which lives for the whole boot.
 const SYSTEM_PID: u32 = 4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SortColumn {
     /// Creation order, as System Informer shows when no column is sorted.
     Natural,
@@ -38,11 +38,13 @@ pub enum SortColumn {
     /// Disk and network bytes per second, from the kernel trace.
     Disk,
     Network,
+    /// RAM in use: the private working set (Task Manager's "Memory").
+    Memory,
 }
 
 impl SortColumn {
     /// Every column except `Natural`, in display order.
-    pub const ALL: [SortColumn; 17] = [
+    pub const ALL: [SortColumn; 18] = [
         SortColumn::Name,
         SortColumn::Pid,
         SortColumn::Cpu,
@@ -59,6 +61,7 @@ impl SortColumn {
         SortColumn::Signer,
         SortColumn::Disk,
         SortColumn::Network,
+        SortColumn::Memory,
         SortColumn::Natural,
     ];
 
@@ -82,6 +85,7 @@ impl SortColumn {
             SortColumn::Signer => "signer",
             SortColumn::Disk => "disk",
             SortColumn::Network => "network",
+            SortColumn::Memory => "ram",
         }
     }
 
@@ -267,6 +271,7 @@ fn compare(a: &ProcessItem, b: &ProcessItem, sort: SortColumn, order: SortOrder)
         SortColumn::IoRate => a.io_total_rate().total_cmp(&b.io_total_rate()),
         SortColumn::Disk => a.disk_rate().total_cmp(&b.disk_rate()),
         SortColumn::Network => a.network_rate().total_cmp(&b.network_rate()),
+        SortColumn::Memory => a.private_working_set.cmp(&b.private_working_set),
         SortColumn::Threads => a.threads.cmp(&b.threads),
         SortColumn::Handles => a.handles.cmp(&b.handles),
     };

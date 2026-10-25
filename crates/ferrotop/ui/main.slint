@@ -1,7 +1,7 @@
 import { AboutSlint, Button, CheckBox, LineEdit, ListView, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import {
-    ColumnWidths, DetailLabel, DetailValue, Graph, HeaderCell, LegendItem, MenuDivider, MenuEntry, ProcessAction, ProcessRow,
+    ColumnChoice, ColumnHeader, DetailLabel, DetailValue, Graph, LegendItem, MenuDivider, MenuEntry, ProcessAction, ProcessColumn, ProcessRow,
     ProcessRowView, Tab,
 } from "widgets.slint";
 import { CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, PerformancePage, Stat } from "performance.slint";
@@ -63,21 +63,13 @@ export component MainWindow inherits Window {
     in-out property <bool> close-to-tray: true;
     in-out property <bool> start-at-sign-in;
 
-    in-out property <bool> show-pid: true;
-    in-out property <bool> show-cpu: true;
-    in-out property <bool> show-gpu: true;
-    in-out property <bool> show-io: true;
-    in-out property <bool> show-disk;
-    in-out property <bool> show-network;
-    in-out property <bool> show-private: true;
-    in-out property <bool> show-working-set: true;
-    in-out property <bool> show-gpu-dedicated: true;
-    in-out property <bool> show-gpu-shared;
-    in-out property <bool> show-threads;
-    in-out property <bool> show-handles;
-    in-out property <bool> show-user: true;
-    in-out property <bool> show-description: true;
-    in-out property <bool> show-signer;
+    // The process list's columns besides Name, and the View menu's column checkboxes.
+    in property <[ProcessColumn]> process-columns;
+    in property <length> process-columns-width;
+    // 0 lets the Name column fill the room left.
+    in property <length> name-column-width;
+    in property <[ColumnChoice]> column-choices-left;
+    in property <[ColumnChoice]> column-choices-right;
 
     in property <string> cpu-text;
     in property <string> cpu-line;
@@ -207,7 +199,11 @@ export component MainWindow inherits Window {
     callback filter-changed(string);
     callback tree-toggled(bool);
     callback theme-chosen(int);
-    callback columns-changed();
+    // A process list column was shown or hidden (by its index in the View menu's list), resized
+    // (-1 for Name) or dropped with its middle at `x`.
+    callback column-toggled(int, bool);
+    callback process-column-resized(int, length);
+    callback process-column-dropped(int, length);
     callback request-terminate();
     callback confirm-accepted();
     callback restart-elevated();
@@ -221,6 +217,9 @@ export component MainWindow inherits Window {
     callback process-menu(ProcessAction, int);
     callback table-event(TableId, TableEvent, int);
     callback table-filter(TableId, string);
+    // A table's column (by display position) was resized, or dropped with its middle at `x`.
+    callback table-column-resized(TableId, int, length);
+    callback table-column-dropped(TableId, int, length);
     callback properties-tab-chosen(int);
     callback properties-back();
     callback find-start(string);
@@ -284,57 +283,8 @@ export component MainWindow inherits Window {
         }
     }
 
-    property <length> pid-width: root.show-pid ? 60px : 0px;
-    property <length> cpu-width: root.show-cpu ? 56px : 0px;
-    property <length> gpu-width: root.show-gpu ? 52px : 0px;
-    property <length> io-width: root.show-io ? 78px : 0px;
-    property <length> disk-width: root.show-disk ? 78px : 0px;
-    property <length> network-width: root.show-network ? 78px : 0px;
-    property <length> private-width: root.show-private ? 84px : 0px;
-    property <length> working-set-width: root.show-working-set ? 84px : 0px;
-    property <length> gpu-dedicated-width: root.show-gpu-dedicated ? 86px : 0px;
-    property <length> gpu-shared-width: root.show-gpu-shared ? 86px : 0px;
-    property <length> threads-width: root.show-threads ? 62px : 0px;
-    property <length> handles-width: root.show-handles ? 70px : 0px;
-    property <length> user-width: root.show-user ? 130px : 0px;
-    property <length> description-width: root.show-description ? 170px : 0px;
-    property <length> signer-width: root.show-signer ? 170px : 0px;
-    property <length> fixed-width: root.pid-width + root.cpu-width + root.gpu-width + root.io-width + root.disk-width + root.network-width + root.private-width + root.working-set-width + root.gpu-dedicated-width + root.gpu-shared-width + root.threads-width + root.handles-width + root.user-width + root.description-width + root.signer-width;
-    property <length> name-width: max(180px, list.visible-width - root.fixed-width);
-    property <ColumnWidths> widths: {
-        name: root.name-width,
-        pid: root.pid-width,
-        cpu: root.cpu-width,
-        gpu: root.gpu-width,
-        io: root.io-width,
-        disk: root.disk-width,
-        network: root.network-width,
-        private: root.private-width,
-        working-set: root.working-set-width,
-        gpu-dedicated: root.gpu-dedicated-width,
-        gpu-shared: root.gpu-shared-width,
-        threads: root.threads-width,
-        handles: root.handles-width,
-        user: root.user-width,
-        description: root.description-width,
-        signer: root.signer-width,
-    };
-
-    property <length> pid-x: root.name-width;
-    property <length> cpu-x: root.pid-x + root.pid-width;
-    property <length> gpu-x: root.cpu-x + root.cpu-width;
-    property <length> io-x: root.gpu-x + root.gpu-width;
-    property <length> disk-x: root.io-x + root.io-width;
-    property <length> network-x: root.disk-x + root.disk-width;
-    property <length> private-x: root.network-x + root.network-width;
-    property <length> working-set-x: root.private-x + root.private-width;
-    property <length> gpu-dedicated-x: root.working-set-x + root.working-set-width;
-    property <length> gpu-shared-x: root.gpu-dedicated-x + root.gpu-dedicated-width;
-    property <length> threads-x: root.gpu-shared-x + root.gpu-shared-width;
-    property <length> handles-x: root.threads-x + root.threads-width;
-    property <length> user-x: root.handles-x + root.handles-width;
-    property <length> description-x: root.user-x + root.user-width;
-    property <length> signer-x: root.description-x + root.description-width;
+    property <length> name-width: root.name-column-width > 0 ? root.name-column-width : max(180px, list.visible-width - root.process-columns-width);
+    property <length> process-row-width: max(list.visible-width, root.name-width + root.process-columns-width);
 
     // Scrolls the selected process to the middle of the list, after jumping to it.
     public function reveal-selected() {
@@ -567,184 +517,45 @@ export component MainWindow inherits Window {
                         Rectangle {
                             background: Theme.panel;
                             height: 28px;
+                            clip: true;
 
-                            HeaderCell {
-                                x: 0;
-                                width: root.name-width;
-                                text: "Name";
-                                align-right: false;
-                                sorted: root.sort-column == 1;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(1);
+                            Rectangle {
+                                x: list.content-x;
+                                width: root.process-row-width;
+                                height: parent.height;
+
+                                ColumnHeader {
+                                    x: 0;
+                                    width: root.name-width;
+                                    text: "Name";
+                                    align-right: false;
+                                    movable: false;
+                                    sorted: root.sort-column == 1;
+                                    ascending: root.sort-ascending;
+                                    clicked => {
+                                        root.sort-by(1);
+                                    }
+                                    resized(width) => {
+                                        root.process-column-resized(-1, width);
+                                    }
                                 }
-                            }
 
-                            if root.show-pid: HeaderCell {
-                                x: root.pid-x;
-                                width: root.pid-width;
-                                text: "PID";
-                                sorted: root.sort-column == 2;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(2);
-                                }
-                            }
-
-                            if root.show-cpu: HeaderCell {
-                                x: root.cpu-x;
-                                width: root.cpu-width;
-                                text: "CPU";
-                                sorted: root.sort-column == 3;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(3);
-                                }
-                            }
-
-                            if root.show-gpu: HeaderCell {
-                                x: root.gpu-x;
-                                width: root.gpu-width;
-                                text: "GPU";
-                                sorted: root.sort-column == 11;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(11);
-                                }
-                            }
-
-                            if root.show-io: HeaderCell {
-                                x: root.io-x;
-                                width: root.io-width;
-                                text: "I/O total";
-                                sorted: root.sort-column == 4;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(4);
-                                }
-                            }
-
-                            if root.show-disk: HeaderCell {
-                                x: root.disk-x;
-                                width: root.disk-width;
-                                text: "Disk";
-                                sorted: root.sort-column == 15;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(15);
-                                }
-                            }
-
-                            if root.show-network: HeaderCell {
-                                x: root.network-x;
-                                width: root.network-width;
-                                text: "Network";
-                                sorted: root.sort-column == 16;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(16);
-                                }
-                            }
-
-                            if root.show-private: HeaderCell {
-                                x: root.private-x;
-                                width: root.private-width;
-                                text: "Private bytes";
-                                sorted: root.sort-column == 5;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(5);
-                                }
-                            }
-
-                            if root.show-working-set: HeaderCell {
-                                x: root.working-set-x;
-                                width: root.working-set-width;
-                                text: "Working set";
-                                sorted: root.sort-column == 6;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(6);
-                                }
-                            }
-
-                            if root.show-gpu-dedicated: HeaderCell {
-                                x: root.gpu-dedicated-x;
-                                width: root.gpu-dedicated-width;
-                                text: "GPU memory";
-                                sorted: root.sort-column == 12;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(12);
-                                }
-                            }
-
-                            if root.show-gpu-shared: HeaderCell {
-                                x: root.gpu-shared-x;
-                                width: root.gpu-shared-width;
-                                text: "Shared GPU";
-                                sorted: root.sort-column == 13;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(13);
-                                }
-                            }
-
-                            if root.show-threads: HeaderCell {
-                                x: root.threads-x;
-                                width: root.threads-width;
-                                text: "Threads";
-                                sorted: root.sort-column == 7;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(7);
-                                }
-                            }
-
-                            if root.show-handles: HeaderCell {
-                                x: root.handles-x;
-                                width: root.handles-width;
-                                text: "Handles";
-                                sorted: root.sort-column == 8;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(8);
-                                }
-                            }
-
-                            if root.show-user: HeaderCell {
-                                x: root.user-x;
-                                width: root.user-width;
-                                text: "User name";
-                                align-right: false;
-                                sorted: root.sort-column == 9;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(9);
-                                }
-                            }
-
-                            if root.show-description: HeaderCell {
-                                x: root.description-x;
-                                width: root.description-width;
-                                text: "Description";
-                                align-right: false;
-                                sorted: root.sort-column == 10;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(10);
-                                }
-                            }
-
-                            if root.show-signer: HeaderCell {
-                                x: root.signer-x;
-                                width: root.signer-width;
-                                text: "Verified signer";
-                                align-right: false;
-                                sorted: root.sort-column == 14;
-                                ascending: root.sort-ascending;
-                                clicked => {
-                                    root.sort-by(14);
+                                for column[i] in root.process-columns: ColumnHeader {
+                                    x: root.name-width + column.x;
+                                    width: column.width;
+                                    text: column.title;
+                                    align-right: column.numeric;
+                                    sorted: root.sort-column == column.sort;
+                                    ascending: root.sort-ascending;
+                                    clicked => {
+                                        root.sort-by(column.sort);
+                                    }
+                                    resized(width) => {
+                                        root.process-column-resized(i, width);
+                                    }
+                                    dropped(offset) => {
+                                        root.process-column-dropped(i, column.x + offset + column.width / 2);
+                                    }
                                 }
                             }
 
@@ -822,10 +633,14 @@ export component MainWindow inherits Window {
                             list := ListView {
                                 width: parent.width;
                                 height: parent.height;
+                                // Wider than the window when the columns are: scroll sideways.
+                                content-width: root.process-row-width;
 
                                 for row[index] in root.rows: ProcessRowView {
                                     item: row;
-                                    widths: root.widths;
+                                    columns: root.process-columns;
+                                    name-width: root.name-width;
+                                    row-width: root.process-row-width;
                                     clicked => {
                                         list-focus.focus();
                                         root.row-clicked(index);
@@ -994,6 +809,12 @@ export component MainWindow inherits Window {
                     filter-changed(text) => {
                         root.table-filter(TableId.services, text);
                     }
+                    column-resized(index, width) => {
+                        root.table-column-resized(TableId.services, index, width);
+                    }
+                    column-dropped(index, x) => {
+                        root.table-column-dropped(TableId.services, index, x);
+                    }
                     sort-by(column) => {
                         root.table-event(TableId.services, TableEvent.sort, column);
                     }
@@ -1028,6 +849,12 @@ export component MainWindow inherits Window {
                     actions: ["Go to process", "Ping", "Trace route"];
                     filter-changed(text) => {
                         root.table-filter(TableId.network, text);
+                    }
+                    column-resized(index, width) => {
+                        root.table-column-resized(TableId.network, index, width);
+                    }
+                    column-dropped(index, x) => {
+                        root.table-column-dropped(TableId.network, index, x);
                     }
                     sort-by(column) => {
                         root.table-event(TableId.network, TableEvent.sort, column);
@@ -1131,6 +958,12 @@ export component MainWindow inherits Window {
                             actions: root.properties-actions;
                             filter-changed(text) => {
                                 root.table-filter(TableId.properties, text);
+                            }
+                            column-resized(index, width) => {
+                                root.table-column-resized(TableId.properties, index, width);
+                            }
+                            column-dropped(index, x) => {
+                                root.table-column-dropped(TableId.properties, index, x);
                             }
                             sort-by(column) => {
                                 root.table-event(TableId.properties, TableEvent.sort, column);
@@ -1249,6 +1082,12 @@ export component MainWindow inherits Window {
                             filter-changed(text) => {
                                 root.table-filter(TableId.find, text);
                             }
+                            column-resized(index, width) => {
+                                root.table-column-resized(TableId.find, index, width);
+                            }
+                            column-dropped(index, x) => {
+                                root.table-column-dropped(TableId.find, index, x);
+                            }
                             sort-by(column) => {
                                 root.table-event(TableId.find, TableEvent.sort, column);
                             }
@@ -1330,6 +1169,12 @@ export component MainWindow inherits Window {
                             actions: ["Go to process", "Bring to front"];
                             filter-changed(text) => {
                                 root.table-filter(TableId.windows, text);
+                            }
+                            column-resized(index, width) => {
+                                root.table-column-resized(TableId.windows, index, width);
+                            }
+                            column-dropped(index, x) => {
+                                root.table-column-dropped(TableId.windows, index, x);
                             }
                             sort-by(column) => {
                                 root.table-event(TableId.windows, TableEvent.sort, column);
@@ -1475,6 +1320,12 @@ export component MainWindow inherits Window {
                                 filter-changed(text) => {
                                     root.table-filter(TableId.history, text);
                                 }
+                                column-resized(index, width) => {
+                                    root.table-column-resized(TableId.history, index, width);
+                                }
+                                column-dropped(index, x) => {
+                                    root.table-column-dropped(TableId.history, index, x);
+                                }
                                 sort-by(column) => {
                                     root.table-event(TableId.history, TableEvent.sort, column);
                                 }
@@ -1590,6 +1441,12 @@ export component MainWindow inherits Window {
                             actions: [];
                             filter-changed(text) => {
                                 root.table-filter(TableId.tools, text);
+                            }
+                            column-resized(index, width) => {
+                                root.table-column-resized(TableId.tools, index, width);
+                            }
+                            column-dropped(index, x) => {
+                                root.table-column-dropped(TableId.tools, index, x);
                             }
                             sort-by(column) => {
                                 root.table-event(TableId.tools, TableEvent.sort, column);
@@ -1969,6 +1826,12 @@ export component MainWindow inherits Window {
                     move-selection(step) => {
                         root.table-event(TableId.stack, TableEvent.move, step);
                     }
+                    column-resized(index, width) => {
+                        root.table-column-resized(TableId.stack, index, width);
+                    }
+                    column-dropped(index, x) => {
+                        root.table-column-dropped(TableId.stack, index, x);
+                    }
                 }
             }
         }
@@ -2192,141 +2055,32 @@ export component MainWindow inherits Window {
                     color: Theme.text;
                 }
 
-                if root.page == 0: GridLayout {
-                    spacing: 2px;
+                if root.page == 0: HorizontalLayout {
+                    spacing: 8px;
 
-                    Row {
-                        CheckBox {
-                            text: "PID";
-                            checked <=> root.show-pid;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
+                    VerticalLayout {
+                        spacing: 2px;
+                        horizontal-stretch: 1;
 
-                        CheckBox {
-                            text: "CPU";
-                            checked <=> root.show-cpu;
+                        for choice in root.column-choices-left: CheckBox {
+                            text: choice.title;
+                            checked: choice.shown;
                             toggled => {
-                                root.columns-changed();
+                                root.column-toggled(choice.index, self.checked);
                             }
                         }
                     }
 
-                    Row {
-                        CheckBox {
-                            text: "GPU";
-                            checked <=> root.show-gpu;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
+                    VerticalLayout {
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        alignment: start;
 
-                        CheckBox {
-                            text: "I/O total";
-                            checked <=> root.show-io;
+                        for choice in root.column-choices-right: CheckBox {
+                            text: choice.title;
+                            checked: choice.shown;
                             toggled => {
-                                root.columns-changed();
-                            }
-                        }
-                    }
-
-                    Row {
-                        CheckBox {
-                            text: "Disk";
-                            checked <=> root.show-disk;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
-
-                        CheckBox {
-                            text: "Network";
-                            checked <=> root.show-network;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
-                    }
-
-                    Row {
-                        CheckBox {
-                            text: "Private bytes";
-                            checked <=> root.show-private;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
-
-                        CheckBox {
-                            text: "Working set";
-                            checked <=> root.show-working-set;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
-                    }
-
-                    Row {
-                        CheckBox {
-                            text: "GPU memory";
-                            checked <=> root.show-gpu-dedicated;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
-
-                        CheckBox {
-                            text: "Shared GPU";
-                            checked <=> root.show-gpu-shared;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
-                    }
-
-                    Row {
-                        CheckBox {
-                            text: "Threads";
-                            checked <=> root.show-threads;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
-
-                        CheckBox {
-                            text: "Handles";
-                            checked <=> root.show-handles;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
-                    }
-
-                    Row {
-                        CheckBox {
-                            text: "User name";
-                            checked <=> root.show-user;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
-
-                        CheckBox {
-                            text: "Description";
-                            checked <=> root.show-description;
-                            toggled => {
-                                root.columns-changed();
-                            }
-                        }
-                    }
-
-                    Row {
-                        CheckBox {
-                            text: "Verified signer";
-                            checked <=> root.show-signer;
-                            toggled => {
-                                root.columns-changed();
+                                root.column-toggled(choice.index, self.checked);
                             }
                         }
                     }

@@ -98,6 +98,25 @@ impl Page {
     }
 }
 
+/// A table's layout key: short lower-case words joined by dots, e.g. `properties.threads`.
+fn is_table_key(key: &str) -> bool {
+    !key.is_empty() && key.len() <= 40 && key.bytes().all(|b| b.is_ascii_lowercase() || b == b'.')
+}
+
+/// `Title:120|Other title:80` → titles with widths; anything malformed is skipped.
+fn parse_layout(value: &str) -> Vec<(String, u32)> {
+    value
+        .split('|')
+        .filter_map(|column| {
+            let (title, width) = column.rsplit_once(':')?;
+            let width: u32 = width.trim().parse().ok().filter(|w| (20..=4000).contains(w))?;
+            let title = title.trim();
+            (!title.is_empty() && title.len() <= 60 && !title.contains(['=', '\n'])).then(|| (title.to_owned(), width))
+        })
+        .take(64)
+        .collect()
+}
+
 /// A graph id is short lower-case words joined by dots, e.g. `gpu.temperature`.
 fn is_graph_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 40 && id.bytes().all(|b| b.is_ascii_lowercase() || b == b'.' || b == b'-')
@@ -114,8 +133,11 @@ pub struct Settings {
     pub tree: bool,
     pub sort: SortColumn,
     pub order: SortOrder,
-    /// Visible columns besides Name (which is always shown).
+    /// Visible columns besides Name (which is always shown), in display order.
     pub columns: Vec<SortColumn>,
+    /// Widths the user gave columns, and the Name column (which otherwise fills the room left).
+    pub column_widths: std::collections::BTreeMap<SortColumn, u32>,
+    pub name_width: Option<u32>,
     /// Logical window size.
     pub window: Option<(u32, u32)>,
     /// Performance graphs the user turned off, by id (see `performance::GraphId`).
@@ -124,6 +146,9 @@ pub struct Settings {
     pub lhm_port: u16,
     /// Closing the window leaves Ferrotop running in the tray.
     pub close_to_tray: bool,
+    /// Column order and widths the user chose, per table (`services`, `properties.threads`...):
+    /// titles in display order with their widths.
+    pub table_layouts: std::collections::BTreeMap<String, Vec<(String, u32)>>,
 }
 
 impl Default for Settings {
@@ -143,15 +168,19 @@ impl Default for Settings {
                 SortColumn::IoRate,
                 SortColumn::PrivateBytes,
                 SortColumn::WorkingSet,
+                SortColumn::Memory,
                 SortColumn::User,
                 SortColumn::Description,
                 SortColumn::Gpu,
                 SortColumn::GpuDedicated,
             ],
+            column_widths: std::collections::BTreeMap::new(),
+            name_width: None,
             window: None,
             hidden_graphs: Vec::new(),
             lhm_port: crate::lhm::DEFAULT_PORT,
             close_to_tray: true,
+            table_layouts: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -188,6 +217,17 @@ impl Settings {
                         .filter(|c| !matches!(c, SortColumn::Name | SortColumn::Natural))
                         .collect();
                 }
+                "column-widths" => {
+                    settings.column_widths = value
+                        .split(',')
+                        .filter_map(|pair| {
+                            let (id, width) = pair.split_once(':')?;
+                            let width: u32 = width.trim().parse().ok().filter(|w| (20..=4000).contains(w))?;
+                            Some((SortColumn::from_id(id.trim())?, width))
+                        })
+                        .collect();
+                }
+                "name-width" => settings.name_width = value.parse().ok().filter(|w| (100..=4000).contains(w)),
                 "hidden-graphs" => {
                     settings.hidden_graphs = value
                         .split(',')
@@ -198,6 +238,15 @@ impl Settings {
                         .collect();
                 }
                 "close-to-tray" => settings.close_to_tray = value != "false",
+                table if table.starts_with("table.") => {
+                    let name = &table["table.".len()..];
+                    if is_table_key(name) && settings.table_layouts.len() < 64 {
+                        let layout = parse_layout(value);
+                        if !layout.is_empty() {
+                            settings.table_layouts.insert(name.to_owned(), layout);
+                        }
+                    }
+                }
                 "lhm-port" => settings.lhm_port = value.parse().ok().filter(|p| *p != 0).unwrap_or(settings.lhm_port),
                 "window" => {
                     settings.window = value
@@ -230,11 +279,22 @@ impl Settings {
         let _ = writeln!(text, "order={}", if self.order == SortOrder::Descending { "desc" } else { "asc" });
         let columns: Vec<&str> = self.columns.iter().map(|c| c.id()).collect();
         let _ = writeln!(text, "columns={}", columns.join(","));
+        if !self.column_widths.is_empty() {
+            let widths: Vec<String> = self.column_widths.iter().map(|(c, w)| format!("{}:{w}", c.id())).collect();
+            let _ = writeln!(text, "column-widths={}", widths.join(","));
+        }
+        if let Some(width) = self.name_width {
+            let _ = writeln!(text, "name-width={width}");
+        }
         if let Some((width, height)) = self.window {
             let _ = writeln!(text, "window={width}x{height}");
         }
         let _ = writeln!(text, "hidden-graphs={}", self.hidden_graphs.join(","));
         let _ = writeln!(text, "close-to-tray={}", self.close_to_tray);
+        for (name, layout) in &self.table_layouts {
+            let columns: Vec<String> = layout.iter().map(|(title, width)| format!("{title}:{width}")).collect();
+            let _ = writeln!(text, "table.{name}={}", columns.join("|"));
+        }
         let _ = writeln!(text, "lhm-port={}", self.lhm_port);
         text
     }
@@ -274,10 +334,14 @@ mod tests {
             sort: SortColumn::Cpu,
             order: SortOrder::Descending,
             columns: vec![SortColumn::Cpu, SortColumn::Handles],
+            column_widths: [(SortColumn::Handles, 120)].into(),
+            name_width: Some(300),
             window: Some((1200, 800)),
             hidden_graphs: vec!["gpu.temperature".into(), "disk.transfer".into()],
             lhm_port: 9000,
             close_to_tray: false,
+            table_layouts: [("properties.threads".to_owned(), vec![("TID".to_owned(), 80), ("CPU".to_owned(), 64)])]
+                .into(),
         };
         assert_eq!(Settings::parse(&settings.serialize()), settings);
     }

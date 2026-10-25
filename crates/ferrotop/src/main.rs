@@ -8,6 +8,7 @@ mod actions;
 mod history_page;
 mod pages;
 mod performance;
+mod process_columns;
 mod tables;
 
 use std::cell::RefCell;
@@ -43,7 +44,7 @@ const HISTORY_PAGE: i32 = 7;
 const WINDOWS_PAGE: i32 = 8;
 
 /// Sort columns in the order the UI numbers them (0 = unsorted).
-const UI_COLUMNS: [SortColumn; 17] = [
+const UI_COLUMNS: [SortColumn; 18] = [
     SortColumn::Natural,
     SortColumn::Name,
     SortColumn::Pid,
@@ -61,6 +62,7 @@ const UI_COLUMNS: [SortColumn; 17] = [
     SortColumn::Signer,
     SortColumn::Disk,
     SortColumn::Network,
+    SortColumn::Memory,
 ];
 
 /// The Performance page's list models, updated in place each refresh.
@@ -110,6 +112,9 @@ struct App {
     tray: Option<TrayIcon>,
     /// False while the window is hidden in the tray.
     visible: bool,
+    /// Settings changed by something that happens many times a second (resizing a column), to
+    /// save with the next refresh.
+    settings_dirty: bool,
 }
 
 impl App {
@@ -137,6 +142,7 @@ impl App {
             actions: actions::Actions::default(),
             tray: None,
             visible: false,
+            settings_dirty: false,
         }
     }
 
@@ -157,6 +163,9 @@ impl App {
 
     /// Brings every view up to date with the latest data.
     fn refresh_view(&mut self, ui: &MainWindow) {
+        if std::mem::take(&mut self.settings_dirty) {
+            self.save_settings(ui);
+        }
         self.convert_icons();
         if self.selected.is_some_and(|key| self.provider.get(&key).is_none()) {
             self.selected = None;
@@ -376,8 +385,10 @@ impl App {
             collapsed: &self.collapsed,
         };
         self.rows = tree::build_rows(self.provider.items(), &options);
-        let rows: Vec<ProcessRow> =
-            self.rows.iter().filter_map(|row| Some(self.ui_row(row, self.provider.get(&row.key)?))).collect();
+        let rows: Vec<ProcessRow> = {
+            let columns = self.shown_columns();
+            self.rows.iter().filter_map(|row| Some(self.ui_row(row, self.provider.get(&row.key)?, &columns))).collect()
+        };
         sync_model(&self.model, rows);
         let selected_index = self.selected.and_then(|key| self.rows.iter().position(|row| row.key == key));
         ui.set_selected_index(selected_index.map_or(-1, |i| i as i32));
@@ -385,25 +396,13 @@ impl App {
         ui.set_sort_ascending(self.settings.order == SortOrder::Ascending);
     }
 
-    fn ui_row(&self, row: &Row, item: &ProcessItem) -> ProcessRow {
+    fn ui_row(&self, row: &Row, item: &ProcessItem, columns: &[&process_columns::ColumnDef]) -> ProcessRow {
         ProcessRow {
             icon: self.icon_for(item),
             name: item.name.as_str().into(),
-            pid: if is_pseudo_process(item.key.pid) { SharedString::new() } else { item.key.pid.to_string().into() },
-            cpu: format::cpu(item.cpu_usage).into(),
-            gpu: format::cpu((item.gpu.usage / 100.0) as f32).into(),
-            io_rate: format::rate(item.io_total_rate()).into(),
-            disk: format::rate(item.disk_rate()).into(),
-            network: format::rate(item.network_rate()).into(),
-            private_bytes: format::bytes(item.private_bytes).into(),
-            working_set: format::bytes(item.working_set).into(),
-            gpu_dedicated: format::bytes(item.gpu.dedicated).into(),
-            gpu_shared: format::bytes(item.gpu.shared).into(),
-            threads: format::count(u64::from(item.threads)).into(),
-            handles: format::count(u64::from(item.handles)).into(),
-            user: item.user().into(),
-            description: item.description().into(),
-            signer: item.signer().into(),
+            cells: ModelRc::new(VecModel::from(
+                columns.iter().map(|def| process_columns::cell(def.column, item)).collect::<Vec<_>>(),
+            )),
             suspended: item.suspended,
             depth: i32::from(row.depth),
             has_children: row.has_children,
@@ -700,51 +699,6 @@ impl App {
         }
     }
 
-    fn column_flags(ui: &MainWindow) -> [(SortColumn, bool); 15] {
-        [
-            (SortColumn::Pid, ui.get_show_pid()),
-            (SortColumn::Cpu, ui.get_show_cpu()),
-            (SortColumn::Gpu, ui.get_show_gpu()),
-            (SortColumn::IoRate, ui.get_show_io()),
-            (SortColumn::Disk, ui.get_show_disk()),
-            (SortColumn::Network, ui.get_show_network()),
-            (SortColumn::PrivateBytes, ui.get_show_private()),
-            (SortColumn::WorkingSet, ui.get_show_working_set()),
-            (SortColumn::GpuDedicated, ui.get_show_gpu_dedicated()),
-            (SortColumn::GpuShared, ui.get_show_gpu_shared()),
-            (SortColumn::Threads, ui.get_show_threads()),
-            (SortColumn::Handles, ui.get_show_handles()),
-            (SortColumn::User, ui.get_show_user()),
-            (SortColumn::Description, ui.get_show_description()),
-            (SortColumn::Signer, ui.get_show_signer()),
-        ]
-    }
-
-    fn apply_columns(&self, ui: &MainWindow) {
-        let shown = |column| self.settings.columns.contains(&column);
-        ui.set_show_pid(shown(SortColumn::Pid));
-        ui.set_show_cpu(shown(SortColumn::Cpu));
-        ui.set_show_gpu(shown(SortColumn::Gpu));
-        ui.set_show_io(shown(SortColumn::IoRate));
-        ui.set_show_disk(shown(SortColumn::Disk));
-        ui.set_show_network(shown(SortColumn::Network));
-        ui.set_show_private(shown(SortColumn::PrivateBytes));
-        ui.set_show_working_set(shown(SortColumn::WorkingSet));
-        ui.set_show_gpu_dedicated(shown(SortColumn::GpuDedicated));
-        ui.set_show_gpu_shared(shown(SortColumn::GpuShared));
-        ui.set_show_threads(shown(SortColumn::Threads));
-        ui.set_show_handles(shown(SortColumn::Handles));
-        ui.set_show_user(shown(SortColumn::User));
-        ui.set_show_description(shown(SortColumn::Description));
-        ui.set_show_signer(shown(SortColumn::Signer));
-    }
-
-    fn columns_changed(&mut self, ui: &MainWindow) {
-        self.settings.columns =
-            Self::column_flags(ui).into_iter().filter(|(_, shown)| *shown).map(|(column, _)| column).collect();
-        self.save_settings(ui);
-    }
-
     fn save_settings(&mut self, ui: &MainWindow) {
         let window = ui.window();
         let size = window.size().to_logical(window.scale_factor());
@@ -1001,9 +955,11 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.set_cpu_cell_groups(ModelRc::from(Rc::clone(&models.cell_groups)));
         ui.set_graph_toggles(ModelRc::from(Rc::clone(&models.toggles)));
         app.pages.bind(&ui);
+        let layouts = app.settings.table_layouts.clone();
+        app.pages.apply_layouts(&layouts);
         app.actions.bind(&ui);
         app.apply_theme(&ui);
-        app.apply_columns(&ui);
+        app.push_columns(&ui);
         if elevated && !debug_privilege {
             app.show_message(&ui, "Running elevated, but SeDebugPrivilege couldn't be enabled".into());
         }
@@ -1042,8 +998,12 @@ fn main() -> Result<(), slint::PlatformError> {
         app.filter = text.to_string();
         app.rebuild_rows(ui);
     }));
-    let columns = handler(&ui, &app, |app, ui, ()| app.columns_changed(ui));
-    ui.on_columns_changed(move || columns(()));
+    let toggle_column = handler(&ui, &app, App::toggle_column);
+    ui.on_column_toggled(move |index, shown| toggle_column((index, shown)));
+    let resize_column = handler(&ui, &app, App::resize_process_column);
+    ui.on_process_column_resized(move |position, width| resize_column((position, width)));
+    let drop_column = handler(&ui, &app, App::drop_process_column);
+    ui.on_process_column_dropped(move |position, x| drop_column((position, x)));
     let restart = handler(&ui, &app, |app, ui, ()| app.restart_elevated(ui));
     ui.on_restart_elevated(move || restart(()));
     pages::connect(&ui, &app);
