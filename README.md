@@ -7,8 +7,8 @@ Ferrotop is a Rust re-imagining of [System Informer](https://github.com/winsider
 structure layouts are ported from System Informer's C sources (MIT). See
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-> **Status: v0.6 in progress.** Processes, process properties, performance, history,
-> services, network connections and the common process actions are in. See
+> **Status: v0.6.0.** Processes, process properties, performance, history, services, network
+> connections, windows and the common process actions are in. See
 > [docs/ROADMAP.md](docs/ROADMAP.md) for what's next.
 
 ## What it does

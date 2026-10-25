@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "ferrotop"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "embed-resource",
  "ferrotop-core",
@@ -1149,14 +1149,14 @@ dependencies = [
 
 [[package]]
 name = "ferrotop-core"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "ferrotop-sys",
 ]
 
 [[package]]
 name = "ferrotop-sys"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "windows-link",
  "windows-sys 0.61.2",
