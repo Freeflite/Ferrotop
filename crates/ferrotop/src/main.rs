@@ -22,6 +22,7 @@ use ferrotop_core::provider::{ProcessItem, ProcessKey, ProcessProvider, ProcessS
 use ferrotop_core::sampler::Sampler;
 use ferrotop_core::settings::{CpuGraph, Page, Settings, ThemeMode};
 use ferrotop_core::tree::{self, Row, SortColumn, SortOrder, ViewOptions};
+use ferrotop_sys::tray::{TrayEvent, TrayIcon};
 use ferrotop_sys::window::{Rgb, TitleBarStyle};
 use performance::Device;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -102,6 +103,9 @@ struct App {
     page: i32,
     pages: pages::Pages,
     actions: actions::Actions,
+    tray: Option<TrayIcon>,
+    /// False while the window is hidden in the tray.
+    visible: bool,
 }
 
 impl App {
@@ -127,6 +131,8 @@ impl App {
             page: 0,
             pages: pages::Pages::default(),
             actions: actions::Actions::default(),
+            tray: None,
+            visible: false,
         }
     }
 
@@ -138,6 +144,15 @@ impl App {
         let cpus = sample.cpus.clone();
         self.provider.update(sample);
         self.perf.update_cpu(self.provider.stats().cpu_usage, &cpus);
+        self.update_tray_tooltip();
+        // Hidden in the tray: keep the data current, but don't build views nobody can see.
+        if self.visible {
+            self.refresh_view(ui);
+        }
+    }
+
+    /// Brings every view up to date with the latest data.
+    fn refresh_view(&mut self, ui: &MainWindow) {
         self.convert_icons();
         if self.selected.is_some_and(|key| self.provider.get(&key).is_none()) {
             self.selected = None;
@@ -162,8 +177,65 @@ impl App {
     fn apply_perf(&mut self, ui: &MainWindow, mut perf: PerfSample) {
         self.provider.set_gpu_usage(std::mem::take(&mut perf.gpu_processes));
         self.perf.update_devices(&perf);
-        if self.page == 1 {
+        if self.visible && self.page == 1 {
             self.update_performance(ui);
+        }
+    }
+
+    fn update_tray_tooltip(&self) {
+        if let Some(tray) = &self.tray {
+            let stats = self.provider.stats();
+            let memory = stats.memory_used() as f64 * 100.0 / stats.memory.total_physical.max(1) as f64;
+            tray.set_tooltip(&format!("Ferrotop\nCPU {:.0}%  ·  memory {memory:.0}%", stats.cpu_usage * 100.0));
+        }
+    }
+
+    fn tray_event(&mut self, ui: &MainWindow, event: TrayEvent) {
+        match event {
+            TrayEvent::Show => self.show_window(ui),
+            TrayEvent::Exit => {
+                self.save_settings(ui);
+                let _ = slint::quit_event_loop();
+            }
+        }
+    }
+
+    /// Shows the window (from the tray, or for a second launch) and brings it to the front.
+    fn show_window(&mut self, ui: &MainWindow) {
+        if !self.visible {
+            self.visible = true;
+            let _ = ui.show();
+            style_title_bar(ui);
+            self.refresh_view(ui);
+        }
+        if let Some(hwnd) = window_handle(ui) {
+            let _ = ferrotop_sys::desktop::bring_to_front(hwnd);
+        }
+    }
+
+    /// The window's close button: hide to the tray, or exit.
+    fn close_requested(&mut self, ui: &MainWindow) {
+        self.save_settings(ui);
+        if self.settings.close_to_tray && self.tray.is_some() {
+            self.visible = false;
+        } else {
+            let _ = slint::quit_event_loop();
+        }
+    }
+
+    fn set_close_to_tray(&mut self, ui: &MainWindow, on: bool) {
+        self.settings.close_to_tray = on;
+        self.save_settings(ui);
+    }
+
+    fn set_start_at_sign_in(&mut self, ui: &MainWindow, on: bool) {
+        match ferrotop_sys::system::set_start_at_sign_in(on) {
+            Ok(()) if on => self.show_message(ui, "Ferrotop will start in the tray when you sign in".into()),
+            Ok(()) => self.show_message(ui, "Ferrotop won't start when you sign in".into()),
+            Err(error) => {
+                ui.set_start_at_sign_in(!on);
+                self.show_message(ui, format!("Couldn't change the sign-in setting: {error}"));
+            }
         }
     }
 
@@ -714,6 +786,15 @@ fn with_app(f: impl FnOnce(&mut App, &MainWindow)) {
 
 /// Paints the native title bar (caption, text, buttons and border) in the current theme's
 /// toolbar colors so it blends into the app. Does nothing until the window exists.
+/// The native window's handle value, once it has been shown.
+fn window_handle(ui: &MainWindow) -> Option<usize> {
+    let handle = ui.window().window_handle();
+    match handle.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Win32(win32)) => Some(win32.hwnd.get() as usize),
+        _ => None,
+    }
+}
+
 fn style_title_bar(ui: &MainWindow) {
     let handle = ui.window().window_handle();
     let Ok(RawWindowHandle::Win32(win32)) = handle.window_handle().map(|h| h.as_raw()) else { return };
@@ -809,6 +890,19 @@ fn main() -> Result<(), slint::PlatformError> {
     // Before anything else loads a DLL: System32-only search, no remote or low-integrity images,
     // no legacy injection points.
     let _ = ferrotop_sys::control::harden_process();
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    // Started at sign-in: begin in the tray.
+    let start_in_tray = arguments.iter().any(|a| a == "--tray");
+    // An elevated restart takes over from the copy that launched it.
+    let replace = arguments.iter().any(|a| a == "--replace");
+    if !replace {
+        // One Ferrotop at a time: a second launch shows the first instead.
+        let deferred =
+            if start_in_tray { ferrotop_sys::tray::is_running() } else { ferrotop_sys::tray::show_existing() };
+        if deferred {
+            return Ok(());
+        }
+    }
     let settings = Settings::load();
     let elevated = ferrotop_sys::system::is_elevated();
     let debug_privilege = elevated && ferrotop_sys::system::enable_debug_privilege().is_ok();
@@ -820,6 +914,8 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_elevated(elevated);
     ui.set_version(env!("CARGO_PKG_VERSION").into());
     ui.set_tree_mode(settings.tree);
+    ui.set_close_to_tray(settings.close_to_tray);
+    ui.set_start_at_sign_in(ferrotop_sys::system::sign_in_command().is_some());
     let lhm_port = settings.lhm_port;
     let start_page = settings.page.index();
     let app = Rc::new(RefCell::new(App::new(ui.as_weak(), settings)));
@@ -885,19 +981,34 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_restart_elevated(move || restart(()));
     pages::connect(&ui, &app);
     actions::connect(&ui, &app);
-    let save = handler(&ui, &app, |app, ui, ()| app.save_settings(ui));
+    let close = handler(&ui, &app, |app, ui, ()| app.close_requested(ui));
     ui.window().on_close_requested(move || {
-        save(());
+        close(());
         slint::CloseRequestResponse::HideWindow
     });
+    ui.on_close_to_tray_toggled(handler(&ui, &app, App::set_close_to_tray));
+    ui.on_start_at_sign_in_toggled(handler(&ui, &app, App::set_start_at_sign_in));
 
-    // Show first: the native window (and so the title bar) only exists once it's shown.
-    ui.show()?;
-    style_title_bar(&ui);
+    let tray = TrayIcon::add("Ferrotop", |event| {
+        // Inside the icon's window procedure: act from the event loop instead.
+        let _ = slint::invoke_from_event_loop(move || with_app(|app, ui| app.tray_event(ui, event)));
+    });
+    let has_tray = tray.is_ok();
+    app.borrow_mut().tray = tray.ok();
+
     ui.invoke_show_page(start_page);
-    let result = slint::run_event_loop();
+    // Without a tray icon there'd be no way back to a hidden window.
+    if !start_in_tray || !has_tray {
+        // Show first: the native window (and so the title bar) only exists once it's shown.
+        ui.show()?;
+        style_title_bar(&ui);
+        app.borrow_mut().visible = true;
+    }
+    // Keeps running while the window is hidden in the tray, until Exit.
+    let result = slint::run_event_loop_until_quit();
     let _ = ui.hide();
-    // Stop the sampler thread (dropping it joins) before the process exits.
+    // Remove the tray icon, and stop the sampler threads (dropping them joins) before exiting.
+    app.borrow_mut().tray.take();
     APP.with(|cell| cell.borrow_mut().take());
     app.borrow_mut().sampler.take();
     result

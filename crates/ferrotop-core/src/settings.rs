@@ -105,6 +105,8 @@ pub struct Settings {
     pub hidden_graphs: Vec<String>,
     /// Where LibreHardwareMonitor's web server listens, for CPU temperatures without PawnIO.
     pub lhm_port: u16,
+    /// Closing the window leaves Ferrotop running in the tray.
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -132,6 +134,7 @@ impl Default for Settings {
             window: None,
             hidden_graphs: Vec::new(),
             lhm_port: crate::lhm::DEFAULT_PORT,
+            close_to_tray: true,
         }
     }
 }
@@ -177,6 +180,7 @@ impl Settings {
                         .map(str::to_owned)
                         .collect();
                 }
+                "close-to-tray" => settings.close_to_tray = value != "false",
                 "lhm-port" => settings.lhm_port = value.parse().ok().filter(|p| *p != 0).unwrap_or(settings.lhm_port),
                 "window" => {
                     settings.window = value
@@ -213,6 +217,7 @@ impl Settings {
             let _ = writeln!(text, "window={width}x{height}");
         }
         let _ = writeln!(text, "hidden-graphs={}", self.hidden_graphs.join(","));
+        let _ = writeln!(text, "close-to-tray={}", self.close_to_tray);
         let _ = writeln!(text, "lhm-port={}", self.lhm_port);
         text
     }
@@ -255,6 +260,7 @@ mod tests {
             window: Some((1200, 800)),
             hidden_graphs: vec!["gpu.temperature".into(), "disk.transfer".into()],
             lhm_port: 9000,
+            close_to_tray: false,
         };
         assert_eq!(Settings::parse(&settings.serialize()), settings);
     }

@@ -59,6 +59,8 @@ export component MainWindow inherits Window {
     in property <int> sort-column;
     in property <bool> sort-ascending;
     in-out property <bool> tree-mode: true;
+    in-out property <bool> close-to-tray: true;
+    in-out property <bool> start-at-sign-in;
 
     in-out property <bool> show-pid: true;
     in-out property <bool> show-cpu: true;
@@ -201,6 +203,8 @@ export component MainWindow inherits Window {
     callback find-cancel();
     // Waits for a click on any window, then shows its process.
     callback pick-window();
+    callback close-to-tray-toggled(bool);
+    callback start-at-sign-in-toggled(bool);
     // Runs a network tool (0 ping, 1 trace route) against an address or host name.
     callback tools-start(int, string);
     callback tools-cancel();
@@ -1776,7 +1780,7 @@ export component MainWindow inherits Window {
         x: root.width - 314px;
         y: 60px;
         width: 300px;
-        height: root.page == 0 ? 528px : root.page == 1 ? 170px + root.graph-toggles.length * 28px : 150px;
+        height: root.page == 0 ? 562px : root.page == 1 ? 204px + root.graph-toggles.length * 28px : 184px;
         close-policy: PopupClosePolicy.close-on-click-outside;
 
         Rectangle {
@@ -1821,6 +1825,26 @@ export component MainWindow inherits Window {
                         primary: root.theme-index == 2;
                         clicked => {
                             root.theme-chosen(2);
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+
+                    CheckBox {
+                        text: "Close to tray";
+                        checked <=> root.close-to-tray;
+                        toggled => {
+                            root.close-to-tray-toggled(self.checked);
+                        }
+                    }
+
+                    CheckBox {
+                        text: "Start at sign-in";
+                        checked <=> root.start-at-sign-in;
+                        toggled => {
+                            root.start-at-sign-in-toggled(self.checked);
                         }
                     }
                 }

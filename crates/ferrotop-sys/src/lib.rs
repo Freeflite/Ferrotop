@@ -38,6 +38,7 @@ pub mod stack;
 pub mod system;
 pub mod threads;
 pub mod token;
+pub mod tray;
 pub mod version;
 pub mod window;
 

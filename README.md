@@ -97,6 +97,10 @@ driver. Ferrotop ships no driver, but uses one of these if it's there:
 
 - **Light, dark, or follow-Windows theme** (follows live changes). On Windows 11 the native title
   bar is painted in the theme's colors.
+- **Tray icon**: closing the window leaves Ferrotop in the notification area (View → Close to
+  tray), with CPU and memory in its tooltip; click it to bring the window back, right-click for
+  Exit. View → Start at sign-in starts it there when you sign in. Launching Ferrotop again shows
+  the copy that's already running.
 - **Run as administrator** from the status bar. When elevated, Ferrotop enables
   `SeDebugPrivilege` (as System Informer does) to read processes owned by services and other
   users.

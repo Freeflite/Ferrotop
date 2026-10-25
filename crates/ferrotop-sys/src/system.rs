@@ -5,13 +5,14 @@ use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 
-use windows_sys::Win32::Foundation::{ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, LUID};
+use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, LUID};
 use windows_sys::Win32::Security::{
     AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
     TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW,
+    RegGetValueW, RegSetKeyValueW,
 };
 use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows_sys::Win32::System::Threading::{
@@ -197,19 +198,20 @@ pub fn enable_debug_privilege() -> Result<()> {
 }
 
 /// Starts a new, elevated copy of Ferrotop through the UAC prompt. The caller should exit once
-/// this succeeds.
+/// this succeeds; `--replace` tells the new copy to take over rather than defer to this one.
 pub fn relaunch_elevated() -> Result<()> {
     let exe = std::env::current_exe().map_err(|_| Error::Malformed { call: "current_exe" })?;
     let exe: Vec<u16> = exe.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     let verb = wide("runas");
-    // SAFETY: the verb and file are NUL-terminated and outlive the call; a null window, parameter
-    // list and directory are all permitted.
+    let parameters = wide("--replace");
+    // SAFETY: the verb, file and parameters are NUL-terminated and outlive the call; a null
+    // window and directory are permitted.
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
             verb.as_ptr(),
             exe.as_ptr(),
-            std::ptr::null(),
+            parameters.as_ptr(),
             std::ptr::null(),
             SW_SHOWNORMAL,
         )
@@ -251,6 +253,47 @@ pub(crate) fn registry_dword(key: &str, value: &str) -> Option<u32> {
 
 /// A string value (up to 1023 characters) under `HKEY_LOCAL_MACHINE`.
 pub(crate) fn registry_string(key: &str, value: &str) -> Option<String> {
+    string_value(HKEY_LOCAL_MACHINE, key, value)
+}
+
+/// Where Windows keeps the programs it starts when you sign in.
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VALUE: &str = "Ferrotop";
+
+/// The command Windows runs for Ferrotop when you sign in, if there is one.
+pub fn sign_in_command() -> Option<String> {
+    string_value(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE)
+}
+
+/// Makes this copy of Ferrotop start in the tray when you sign in, or stops that. Only your own
+/// sign-in is affected (the current user's Run key).
+pub fn set_start_at_sign_in(enabled: bool) -> Result<()> {
+    let (key, value) = (wide(RUN_KEY), wide(RUN_VALUE));
+    if !enabled {
+        // SAFETY: both strings are NUL-terminated.
+        let status = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr()) };
+        return match status {
+            ERROR_SUCCESS | ERROR_FILE_NOT_FOUND => Ok(()),
+            code => Err(Error::Win32 { call: "RegDeleteKeyValueW", code }),
+        };
+    }
+    let exe = std::env::current_exe().map_err(|_| Error::Malformed { call: "current_exe" })?;
+    let command: Vec<u16> = "\""
+        .encode_utf16()
+        .chain(exe.as_os_str().encode_wide())
+        .chain("\" --tray".encode_utf16())
+        .chain(std::iter::once(0))
+        .collect();
+    let bytes = u32::try_from(command.len() * 2).map_err(|_| Error::Malformed { call: "sign-in command" })?;
+    // SAFETY: the key and value names are NUL-terminated, and `command` is a NUL-terminated
+    // REG_SZ of `bytes` bytes.
+    let status = unsafe {
+        RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), REG_SZ, command.as_ptr().cast(), bytes)
+    };
+    if status == ERROR_SUCCESS { Ok(()) } else { Err(Error::Win32 { call: "RegSetKeyValueW", code: status }) }
+}
+
+fn string_value(root: HKEY, key: &str, value: &str) -> Option<String> {
     let (key, value) = (wide(key), wide(value));
     let mut data = vec![0u16; 1024];
     let mut size = (data.len() * 2) as u32;
@@ -258,7 +301,7 @@ pub(crate) fn registry_string(key: &str, value: &str) -> Option<String> {
     // type pointer is permitted. RRF_RT_REG_SZ guarantees a NUL-terminated result.
     let status = unsafe {
         RegGetValueW(
-            HKEY_LOCAL_MACHINE,
+            root,
             key.as_ptr(),
             value.as_ptr(),
             RRF_RT_REG_SZ,
