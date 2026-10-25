@@ -606,9 +606,13 @@ mod tests {
 
     #[test]
     fn trusts_only_folders_admins_own() {
-        // ProgramData itself belongs to SYSTEM; the temp folder to this user.
+        // ProgramData itself belongs to SYSTEM.
         assert!(is_trusted_dir(&known_folder(&FOLDERID_ProgramData).expect("program data")));
-        assert!(!is_trusted_dir(&std::env::temp_dir()));
+        // The temp folder belongs to this user, unless it was made elevated (as on CI), which
+        // makes Administrators its owner.
+        if !crate::system::is_elevated() {
+            assert!(!is_trusted_dir(&std::env::temp_dir()));
+        }
         assert!(!is_trusted_dir(Path::new(r"C:\definitely\not\here")));
         let file = std::env::current_exe().expect("exe");
         assert!(!is_trusted_dir(&file), "a file isn't a folder");
