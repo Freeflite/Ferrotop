@@ -116,6 +116,19 @@ export component HistoryGraphView inherits Rectangle {
             spacing: 6px;
             padding-right: 18px;
 
+            // Grip dots: the title is the handle for moving the graph.
+            Rectangle {
+                width: 8px;
+
+                for i in 6: Rectangle {
+                    x: mod(i, 2) * 4px + 1px;
+                    y: (parent.height - 10px) / 2 + floor(i / 2) * 4px;
+                    width: 2px;
+                    height: 2px;
+                    background: mover.has-hover || root.moving ? Theme.text : Theme.muted;
+                }
+            }
+
             Text {
                 text: root.data.title;
                 font-size: 11px;

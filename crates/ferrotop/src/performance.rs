@@ -7,7 +7,7 @@ use ferrotop_core::format;
 use ferrotop_core::history::{History, nice_ceiling};
 use ferrotop_core::perf::{CpuTempSource, PawnIoState, PerformanceProvider, cpu_temperature};
 use ferrotop_core::provider::SystemStats;
-use ferrotop_core::series::slug;
+use ferrotop_core::series::{slug, uniform_ccds};
 use ferrotop_core::settings::CpuGraph;
 
 use crate::{CellGroup, DeviceTile, GraphData, GraphPair, GraphToggle, Stat};
@@ -315,17 +315,6 @@ fn grid_columns(count: usize) -> i32 {
     }
 }
 
-/// How many CCDs `ccd_of_ccx` (each CCX's CCD, in CCX order) describes, if each CCD's CCXs sit
-/// together and every CCD has as many: the layout the CCD boxes need.
-fn uniform_ccds(ccd_of_ccx: &[u32]) -> Option<usize> {
-    let runs: Vec<&[u32]> = ccd_of_ccx.chunk_by(|a, b| a == b).collect();
-    let mut ccds: Vec<u32> = runs.iter().map(|run| run[0]).collect();
-    ccds.sort_unstable();
-    ccds.dedup();
-    let even = runs.windows(2).all(|pair| pair[0].len() == pair[1].len());
-    (!runs.is_empty() && ccds.len() == runs.len() && even).then_some(runs.len())
-}
-
 /// The CPU graph grid for the per-core, per-thread and per-CCX views.
 struct CellGrid {
     title: String,
@@ -425,7 +414,10 @@ fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
                         .iter()
                         .enumerate()
                         .map(|(i, history)| {
-                            cell(format!("CCX {i} · cores {}", span(&cores_of(i))), history, format!("cpu.ccx.{i}"))
+                            // The CCX, and the whole CCD it's part of.
+                            let ccd = i / per_ccd + 1;
+                            let keys = format!("cpu.ccx.{i};cpu.ccd.{ccd};cpu.ccd.{ccd}.temp");
+                            cell(format!("CCX {i} · cores {}", span(&cores_of(i))), history, keys)
                         })
                         .collect();
                     // Whole CCDs per row, so a box never wraps.
@@ -439,6 +431,7 @@ fn cpu_cells(perf: &PerformanceProvider, graph: CpuGraph) -> CellGrid {
                                 column: (first % columns) as i32,
                                 row: (first / columns) as i32,
                                 columns: per_ccd as i32,
+                                history: format!("cpu.ccd.{};cpu.ccd.{}.temp", n + 1, n + 1).into(),
                             }
                         })
                         .collect();

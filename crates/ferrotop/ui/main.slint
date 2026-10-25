@@ -73,6 +73,9 @@ export component MainWindow inherits Window {
 
     // The small graphs in the header.
     in property <[HeaderTile]> header-tiles;
+    // Toggled when Windows needs the window repainted: the invisible cover below changes, so the
+    // whole window is drawn again (the renderer otherwise redraws only what changed).
+    in property <bool> repaint-all;
 
     in property <string> status-cpu;
     in property <string> status-memory;
@@ -1386,7 +1389,7 @@ export component MainWindow inherits Window {
                             history-area := ScrollView {
                                 horizontal-stretch: 1;
                                 content-width: self.visible-width;
-                                content-height: max(self.visible-height, root.history-content-height);
+                                content-height: max(self.visible-height, root.history-content-height + 36px);
 
                                 for graph[index] in root.history-graphs: HistoryGraphView {
                                     data: graph;
@@ -1401,6 +1404,14 @@ export component MainWindow inherits Window {
                                     removed => {
                                         root.history-graph-removed(index);
                                     }
+                                }
+
+                                if root.history-graphs.length > 0: Text {
+                                    x: 0;
+                                    y: root.history-content-height + 12px;
+                                    text: "Drag a graph by its title to move it, or by its right or bottom edge to resize it. × removes it.";
+                                    font-size: 11px;
+                                    color: Theme.muted;
                                 }
 
                                 if root.history-graphs.length == 0: Text {
@@ -1977,6 +1988,15 @@ export component MainWindow inherits Window {
                 }
             }
         }
+    }
+
+    // Invisible either way; see `repaint-all`.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        background: root.repaint-all ? #ffffff00 : #00000000;
     }
 
     process-menu := PopupWindow {

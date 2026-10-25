@@ -230,7 +230,7 @@ impl App {
         if !self.visible {
             self.visible = true;
             let _ = ui.show();
-            style_title_bar(ui);
+            when_native_window(ui.as_weak(), 0);
             self.refresh_view(ui);
         }
         if let Some(hwnd) = window_handle(ui) {
@@ -816,6 +816,29 @@ fn style_title_bar(ui: &MainWindow) {
     let _ = ferrotop_sys::window::style_title_bar(win32.hwnd, &style);
 }
 
+/// Styles the title bar and watches repaints once the native window exists: `show()` only asks
+/// for it, and it's created when the event loop gets to it.
+fn when_native_window(ui: slint::Weak<MainWindow>, tries: u32) {
+    let Some(window) = ui.upgrade() else { return };
+    if window_handle(&window).is_some() {
+        style_title_bar(&window);
+        watch_repaints(&window);
+    } else if tries < 250 {
+        slint::Timer::single_shot(Duration::from_millis(20), move || when_native_window(ui, tries + 1));
+    }
+}
+
+/// Repaints the whole window when Windows asks for part of it: Slint itself repaints only what it
+/// changed, which would leave areas Windows lost (after maximizing, say) blank.
+fn watch_repaints(ui: &MainWindow) {
+    let handle = ui.window().window_handle();
+    let Ok(RawWindowHandle::Win32(win32)) = handle.window_handle().map(|h| h.as_raw()) else { return };
+    let _ = ferrotop_sys::window::watch_repaints(win32.hwnd, || {
+        // Toggling this marks the whole window changed (see `repaint-all` in main.slint).
+        let _ = slint::invoke_from_event_loop(|| with_app(|_, ui| ui.set_repaint_all(!ui.get_repaint_all())));
+    });
+}
+
 /// The row highlight, in System Informer's priority order. Matches `ProcessRow.highlight`.
 fn highlight(item: &ProcessItem) -> i32 {
     let details = item.details.as_deref();
@@ -1054,7 +1077,7 @@ fn main() -> Result<(), slint::PlatformError> {
     if !start_in_tray || !has_tray {
         // Show first: the native window (and so the title bar) only exists once it's shown.
         ui.show()?;
-        style_title_bar(&ui);
+        when_native_window(ui.as_weak(), 0);
         app.borrow_mut().visible = true;
     }
     // Keeps running while the window is hidden in the tray, until Exit.

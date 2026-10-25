@@ -176,6 +176,7 @@ pub fn short_label(readings: &[Reading], id: &str) -> String {
         ["cpu", "core", i] => format!("Core {i}"),
         ["cpu", "core", i, "temp"] => format!("Core {i} temp"),
         ["cpu", "ccd", n, "temp"] => format!("CCD {n} temp"),
+        ["cpu", "ccd", n] => format!("CCD {n}"),
         ["cpu", "ccx", _] => readings
             .iter()
             .find(|r| r.id == id)
@@ -267,6 +268,28 @@ pub fn slug(label: &str) -> String {
     slug.trim_end_matches('-').chars().take(24).collect()
 }
 
+/// How many CCDs `ccd_of_ccx` (each CCX's CCD, in CCX order) describes, if each CCD's CCXs sit
+/// together and every CCD has as many: the layout the Performance page's CCD boxes need.
+pub fn uniform_ccds(ccd_of_ccx: &[u32]) -> Option<usize> {
+    let runs: Vec<&[u32]> = ccd_of_ccx.chunk_by(|a, b| a == b).collect();
+    let mut ccds: Vec<u32> = runs.iter().map(|run| run[0]).collect();
+    ccds.sort_unstable();
+    ccds.dedup();
+    let even = runs.windows(2).all(|pair| pair[0].len() == pair[1].len());
+    (!runs.is_empty() && ccds.len() == runs.len() && even).then_some(runs.len())
+}
+
+/// How many CCXs each CCD has, when it's more than one (Zen 2): known from the CPU, or else
+/// from the CCD temperature sensors. Each CCD holds the next run of CCXs.
+pub fn ccxs_per_ccd(perf: &PerformanceProvider) -> Option<usize> {
+    let ccxs = perf.l3_groups.len();
+    let ccds = match uniform_ccds(&perf.machine.cpu.l3_ccds) {
+        Some(count) if count > 1 && perf.machine.cpu.l3_ccds.len() == ccxs => count,
+        _ => perf.cpu_temps.as_ref().map_or(0, |t| t.ccds.len()),
+    };
+    ccxs.checked_div(ccds).filter(|per| *per > 1 && ccxs.is_multiple_of(ccds))
+}
+
 /// Every series the provider has now, device by device in the Performance page's order.
 pub fn readings(perf: &PerformanceProvider) -> Vec<Reading> {
     let mut out = Vec::new();
@@ -302,6 +325,18 @@ pub fn readings(perf: &PerformanceProvider) -> Vec<Reading> {
         for (i, history) in perf.l3_groups.iter().enumerate() {
             let name = if one_per_ccd { format!("CCD {} utilization", i + 1) } else { format!("CCX {i} utilization") };
             add(format!("cpu.ccx.{i}"), "CPU", &name, Unit::Fraction, CPU, None, history.latest());
+        }
+    }
+    // A CCD made of several CCXs: its load, the average of theirs.
+    if let Some(per_ccd) = ccxs_per_ccd(perf) {
+        for (n, ccxs) in perf.l3_groups.chunks(per_ccd).enumerate() {
+            let load = ccxs
+                .iter()
+                .map(|h| h.latest())
+                .collect::<Option<Vec<f64>>>()
+                .map(|v| v.iter().sum::<f64>() / v.len() as f64);
+            let name = format!("CCD {} utilization", n + 1);
+            add(format!("cpu.ccd.{}", n + 1), "CPU", &name, Unit::Fraction, CPU, None, load);
         }
     }
     if let Some(temps) = temps {
@@ -858,6 +893,31 @@ mod tests {
         assert_eq!(list.iter().map(GraphSpec::key).collect::<Vec<_>>(), ["a", "b", "c"]);
         move_graph(&mut list, 1, 2);
         assert_eq!(list.iter().map(GraphSpec::key).collect::<Vec<_>>(), ["a", "b", "c"], "dropped on itself");
+    }
+
+    #[test]
+    fn a_ccd_of_several_ccxs_gets_its_own_load() {
+        let mut perf = PerformanceProvider::new();
+        let mut machine = crate::perf::Machine::default();
+        machine.cpu.l3_ccds = vec![0, 0, 1, 1];
+        perf.machine = std::sync::Arc::new(machine);
+        for load in [0.2, 0.4, 0.6, 1.0] {
+            let mut history = History::new(10);
+            history.push(load);
+            perf.l3_groups.push(history);
+        }
+        assert_eq!(ccxs_per_ccd(&perf), Some(2));
+        let readings = readings(&perf);
+        let ccd = |id: &str| readings.iter().find(|r| r.id == id).and_then(|r| r.value);
+        assert!(ccd("cpu.ccd.1").is_some_and(|v| (v - 0.3).abs() < 1e-9));
+        assert!(ccd("cpu.ccd.2").is_some_and(|v| (v - 0.8).abs() < 1e-9));
+        assert_eq!(short_label(&readings, "cpu.ccd.2"), "CCD 2");
+        // One CCX per CCD: the CCX is the CCD, so no separate series.
+        perf.l3_groups.truncate(2);
+        let mut machine = crate::perf::Machine::default();
+        machine.cpu.l3_ccds = vec![0, 1];
+        perf.machine = std::sync::Arc::new(machine);
+        assert_eq!(ccxs_per_ccd(&perf), None);
     }
 
     #[test]
