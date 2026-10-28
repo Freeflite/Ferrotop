@@ -7,9 +7,18 @@ Ferrotop is a Rust re-imagining of [System Informer](https://github.com/winsider
 structure layouts are ported from System Informer's C sources (MIT). See
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-> **Status: v0.6.0.** Processes, process properties, performance, history, services, network
+> **Status: v0.6.1.** Processes, process properties, performance, history, services, network
 > connections, windows and the common process actions are in. See
 > [docs/ROADMAP.md](docs/ROADMAP.md) for what's next.
+
+## Download
+
+**[Download the latest `ferrotop.exe`](https://github.com/Freeflite/Ferrotop/releases/latest)**:
+one file, nothing to install, 64-bit Windows 10 or 11. It isn't code-signed, so the first run
+shows SmartScreen's "Windows protected your PC"; choose **More info → Run anyway**. Each release
+lists SHA-256 checksums and has a signed build-provenance attestation
+(`gh attestation verify ferrotop.exe --repo Freeflite/Ferrotop`), or
+[build it yourself](#building).
 
 ## What it does
 
@@ -183,14 +192,6 @@ surface small, contained and auditable. More in [SECURITY.md](SECURITY.md).
 - **Software rendering only**: no OpenGL or GPU driver in the process.
 - **No network**, except the optional loopback request to LibreHardwareMonitor. No telemetry and
   no symbol downloads.
-
-## Download
-
-Get `ferrotop.exe` from [Releases](https://github.com/Freeflite/Ferrotop/releases): one file,
-nothing to install, 64-bit Windows 10 or 11. It isn't code-signed, so the first run shows
-SmartScreen's "Windows protected your PC"; choose **More info → Run anyway**. Each release lists
-SHA-256 checksums and has a signed build-provenance attestation
-(`gh attestation verify ferrotop.exe --repo Freeflite/Ferrotop`), or build it yourself below.
 
 ## Building
 

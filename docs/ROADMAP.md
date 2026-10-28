@@ -105,6 +105,8 @@ are noted so each port can be checked against the original.
 - [x] Header graphs: pick any figure for the small graphs beside the tabs
 - [x] Movable, resizable columns in every table; a RAM (private working set) column
 - [x] Tray icon, close to tray, start at sign-in, one instance at a time
+- [x] Open in place of Task Manager (taskbar, Ctrl+Shift+Esc, Ctrl+Alt+Del) through Image File
+      Execution Options, pointing at the protected Program Files copy (0.6.1)
 
 ## Next
 
