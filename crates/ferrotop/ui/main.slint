@@ -62,6 +62,8 @@ export component MainWindow inherits Window {
     in-out property <bool> tree-mode: true;
     in-out property <bool> close-to-tray: true;
     in-out property <bool> start-at-sign-in;
+    // Task Manager opens Ferrotop instead.
+    in-out property <bool> replace-task-manager;
 
     // The process list's columns besides Name, and the View menu's column checkboxes.
     in property <[ProcessColumn]> process-columns;
@@ -244,6 +246,7 @@ export component MainWindow inherits Window {
     callback pick-window();
     callback close-to-tray-toggled(bool);
     callback start-at-sign-in-toggled(bool);
+    callback replace-task-manager-toggled(bool);
     // Runs a network tool (0 ping, 1 trace route) against an address or host name.
     callback tools-start(int, string);
     callback tools-cancel();
@@ -2304,7 +2307,7 @@ export component MainWindow inherits Window {
         x: root.width - 314px;
         y: 60px;
         width: 300px;
-        height: (root.page == 0 ? 562px : root.page == 1 ? 204px + root.graph-toggles.length * 28px : 184px) + 36px;
+        height: (root.page == 0 ? 562px : root.page == 1 ? 204px + root.graph-toggles.length * 28px : 184px) + 66px;
         close-policy: PopupClosePolicy.close-on-click-outside;
 
         Rectangle {
@@ -2370,6 +2373,14 @@ export component MainWindow inherits Window {
                         toggled => {
                             root.start-at-sign-in-toggled(self.checked);
                         }
+                    }
+                }
+
+                CheckBox {
+                    text: "Open Ferrotop instead of Task Manager";
+                    checked <=> root.replace-task-manager;
+                    toggled => {
+                        root.replace-task-manager-toggled(self.checked);
                     }
                 }
 

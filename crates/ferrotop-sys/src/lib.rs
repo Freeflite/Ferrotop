@@ -38,6 +38,7 @@ pub mod service_host;
 pub mod signature;
 pub mod stack;
 pub mod system;
+pub mod task_manager;
 pub mod threads;
 pub mod token;
 pub mod tray;

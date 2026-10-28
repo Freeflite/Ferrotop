@@ -52,6 +52,17 @@ Only the latest release gets security fixes.
   - Windows strips every privilege from its token except bypass traverse checking, creating
     global objects (for the live section) and system profiling (for the kernel trace).
   - Installing and removing it are explicit actions that need administrator approval.
+- **Opening in place of Task Manager** sets the `Debugger` value of Task Manager's Image File
+  Execution Options, which needs administrator approval:
+  - It always points at the copy in `%ProgramFiles%\Ferrotop` (shared with the history service),
+    never at the copy you launched: a program users could replace would run wherever Task
+    Manager would have.
+  - Started that way, Ferrotop ignores its command line. Whatever starts Task Manager chooses its
+    arguments, and that launch may be elevated, so none of them can trigger Ferrotop's own
+    administrator actions (installing or removing the service, say).
+  - Putting Task Manager back removes the value only if it's Ferrotop's, leaving another
+    program's replacement alone. Removing the history service keeps the copy while Task Manager
+    still opens it.
 - **History layout files** (`%APPDATA%\Ferrotop\Layouts\*.json`) may come from anyone, so
   they're read with the same strict, depth-limited JSON parser as LibreHardwareMonitor's
   output, capped in size, and only ever turned into a list of graphs: ids are checked against a

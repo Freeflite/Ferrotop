@@ -42,6 +42,8 @@ const PROPERTIES_PAGE: i32 = 4;
 const FIND_PAGE: i32 = 5;
 const TOOLS_PAGE: i32 = 6;
 const HISTORY_PAGE: i32 = 7;
+/// What a declined UAC prompt fails with.
+const ERROR_CANCELLED: u32 = 1223;
 const WINDOWS_PAGE: i32 = 8;
 
 /// Sort columns in the order the UI numbers them (0 = unsorted).
@@ -262,6 +264,30 @@ impl App {
                 self.show_message(ui, format!("Couldn't change the sign-in setting: {error}"));
             }
         }
+    }
+
+    /// View menu: open Ferrotop instead of Task Manager, or put Task Manager back. It's a setting
+    /// for the whole machine, so an elevated copy of Ferrotop makes the change (the UAC prompt is
+    /// the confirmation).
+    fn set_replace_task_manager(&mut self, ui: &MainWindow, replace: bool) {
+        let arguments = if replace { "--replace-task-manager" } else { "--restore-task-manager" };
+        self.show_message(ui, "Asking Windows for administrator approval…".into());
+        background(
+            move || service_host::run_self_elevated(arguments),
+            move |app, ui, result| {
+                let what = if replace { "Couldn't replace Task Manager" } else { "Couldn't put Task Manager back" };
+                let message = match result {
+                    Ok(0) if replace => "Task Manager now opens Ferrotop".to_owned(),
+                    Ok(0) => "Task Manager is back".to_owned(),
+                    Ok(1) => what.to_owned(),
+                    Ok(code) => format!("{what}: {}", std::io::Error::from_raw_os_error(code as i32)),
+                    Err(ferrotop_sys::Error::Win32 { code: ERROR_CANCELLED, .. }) => "Cancelled".to_owned(),
+                    Err(error) => format!("{what}: {error}"),
+                };
+                app.show_message(ui, message);
+                ui.set_replace_task_manager(ferrotop_sys::task_manager::is_replaced());
+            },
+        );
     }
 
     /// Turns newly checked image files' icon pixels into UI images, once per file.
@@ -919,7 +945,12 @@ fn main() -> Result<(), slint::PlatformError> {
     // Before anything else loads a DLL: System32-only search, no remote or low-integrity images,
     // no legacy injection points.
     let _ = ferrotop_sys::control::harden_process();
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let mut arguments: Vec<String> = std::env::args().skip(1).collect();
+    // Started in Task Manager's place: whatever starts Task Manager picks its arguments, and may
+    // be elevated, so none of them count.
+    if ferrotop_sys::task_manager::started_as_task_manager(arguments.first().map(String::as_str)) {
+        arguments.clear();
+    }
     // The history service and its installer are this same program, without a window.
     if arguments.iter().any(|a| a == "--service") {
         run_history_service();
@@ -933,6 +964,15 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     if arguments.iter().any(|a| a == "--uninstall-service") {
         std::process::exit(exit_code(service_host::uninstall()));
+    }
+    if arguments.iter().any(|a| a == "--replace-task-manager") {
+        let replaced = std::env::current_exe()
+            .map_err(|_| ferrotop_sys::Error::Other { message: "couldn't find Ferrotop's own path" })
+            .and_then(|exe| ferrotop_sys::task_manager::replace(&exe));
+        std::process::exit(exit_code(replaced));
+    }
+    if arguments.iter().any(|a| a == "--restore-task-manager") {
+        std::process::exit(exit_code(ferrotop_sys::task_manager::restore()));
     }
     // Started at sign-in: begin in the tray.
     let start_in_tray = arguments.iter().any(|a| a == "--tray");
@@ -959,6 +999,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_tree_mode(settings.tree);
     ui.set_close_to_tray(settings.close_to_tray);
     ui.set_start_at_sign_in(ferrotop_sys::system::sign_in_command().is_some());
+    ui.set_replace_task_manager(ferrotop_sys::task_manager::is_replaced());
     let lhm_port = settings.lhm_port;
     let start_page = settings.page.index();
     let app = Rc::new(RefCell::new(App::new(ui.as_weak(), settings)));
@@ -1066,6 +1107,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let history_service = handler(&ui, &app, |app, ui, ()| app.history_service_clicked(ui));
     ui.on_history_service_clicked(move || history_service(()));
     ui.on_start_at_sign_in_toggled(handler(&ui, &app, App::set_start_at_sign_in));
+    ui.on_replace_task_manager_toggled(handler(&ui, &app, App::set_replace_task_manager));
 
     let tray = TrayIcon::add("Ferrotop", |event| {
         // Inside the icon's window procedure: act from the event loop instead.

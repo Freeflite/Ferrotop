@@ -397,21 +397,7 @@ pub fn install(exe: &Path) -> Result<()> {
         stop_and_wait(service)?;
     }
 
-    let target = service_exe_path()?;
-    if let Some(folder) = target.parent() {
-        std::fs::create_dir_all(folder)
-            .map_err(|_| Error::Other { message: "couldn't create the Ferrotop folder in Program Files" })?;
-    }
-    if !same_file(exe, &target) {
-        // The old service process may take a moment to let go of its file.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while std::fs::copy(exe, &target).is_err() {
-            if Instant::now() > deadline {
-                return Err(Error::Other { message: "couldn't copy Ferrotop to Program Files" });
-            }
-            thread::sleep(Duration::from_millis(250));
-        }
-    }
+    let target = install_copy(exe)?;
     prepare_data_dir(&data_dir()?)?;
 
     let command = wide(&format!("\"{}\" --service", target.display()));
@@ -515,8 +501,59 @@ fn configure(service: &ScManager) -> Result<()> {
     Ok(())
 }
 
-/// Stops and removes the service, and its copy in Program Files. The recorded history stays
-/// (see [`remove_history`]). Needs administrator rights.
+/// Copies `exe` to Program Files, where the service and Task Manager's replacement run from,
+/// unless it's that copy already. Needs administrator rights.
+pub fn install_copy(exe: &Path) -> Result<PathBuf> {
+    let target = service_exe_path()?;
+    let folder = target.parent().ok_or(Error::Malformed { call: "service_exe_path" })?;
+    std::fs::create_dir_all(folder)
+        .map_err(|_| Error::Other { message: "couldn't create the Ferrotop folder in Program Files" })?;
+    remove_set_aside(folder);
+    if same_file(exe, &target) {
+        return Ok(target);
+    }
+    // A copy that's running (the old service letting go, or Ferrotop opened as Task Manager)
+    // can't be overwritten, but it can be moved aside, to be deleted next time.
+    if std::fs::copy(exe, &target).is_err() {
+        if target.exists() {
+            std::fs::rename(&target, set_aside_name(folder))
+                .map_err(|_| Error::Other { message: "couldn't replace Ferrotop's copy in Program Files" })?;
+        }
+        std::fs::copy(exe, &target).map_err(|_| Error::Other { message: "couldn't copy Ferrotop to Program Files" })?;
+    }
+    Ok(target)
+}
+
+/// Deletes the copy in Program Files, and its folder once empty. A copy that's still running
+/// is moved aside instead, to be deleted next time. Needs administrator rights.
+pub fn remove_copy() {
+    let Ok(target) = service_exe_path() else { return };
+    let Some(folder) = target.parent() else { return };
+    if target.exists() && std::fs::remove_file(&target).is_err() {
+        let _ = std::fs::rename(&target, set_aside_name(folder));
+    }
+    remove_set_aside(folder);
+    let _ = std::fs::remove_dir(folder);
+}
+
+fn set_aside_name(folder: &Path) -> PathBuf {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    folder.join(format!("ferrotop-{stamp}.old"))
+}
+
+/// Deletes copies moved aside earlier (those still running stay).
+fn remove_set_aside(folder: &Path) {
+    let Ok(entries) = std::fs::read_dir(folder) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("old")) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Stops and removes the service, and its copy in Program Files unless Task Manager opens it.
+/// The recorded history stays (see [`remove_history`]). Needs administrator rights.
 pub fn uninstall() -> Result<()> {
     let manager = open_manager(SC_MANAGER_CONNECT)?;
     match open_service(&manager, SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE) {
@@ -530,13 +567,9 @@ pub fn uninstall() -> Result<()> {
         Err(Error::Win32 { code: ERROR_SERVICE_DOES_NOT_EXIST, .. }) => {}
         Err(error) => return Err(error),
     }
-    let target = service_exe_path()?;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while target.exists() && std::fs::remove_file(&target).is_err() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(250));
-    }
-    if let Some(folder) = target.parent() {
-        let _ = std::fs::remove_dir(folder);
+    // Task Manager would fail to open with its replacement gone.
+    if !crate::task_manager::is_replaced() {
+        remove_copy();
     }
     Ok(())
 }

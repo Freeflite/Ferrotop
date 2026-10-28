@@ -17,7 +17,7 @@ use ferrotop_sys::service_host::{self, ServiceState};
 use slint::{ModelRc, SharedString, VecModel};
 
 use crate::tables::TableView;
-use crate::{App, HISTORY_PAGE, HistoryGraph, MainWindow, background};
+use crate::{App, ERROR_CANCELLED, HISTORY_PAGE, HistoryGraph, MainWindow, background};
 
 /// Points across each graph.
 const POINTS: usize = 360;
@@ -26,7 +26,6 @@ const ROW_GAP: f32 = 12.0;
 /// A graph added from a menu: half the page wide.
 const NEW_SPAN: u8 = 6;
 const NEW_HEIGHT: u16 = 130;
-const ERROR_CANCELLED: u32 = 1223;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Range {

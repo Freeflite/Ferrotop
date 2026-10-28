@@ -133,6 +133,9 @@ driver. Ferrotop ships no driver, but uses one of these if it's there:
   tray), with CPU and memory in its tooltip; click it to bring the window back, right-click for
   Exit. View → Start at sign-in starts it there when you sign in. Launching Ferrotop again shows
   the copy that's already running.
+- **In place of Task Manager** (View → Open Ferrotop instead of Task Manager, with administrator
+  approval): the taskbar's Task Manager, Ctrl+Shift+Esc and the Ctrl+Alt+Del screen open
+  Ferrotop, as Process Explorer and System Informer can. Untick it to put Task Manager back.
 - **Run as administrator** from the status bar. When elevated, Ferrotop enables
   `SeDebugPrivilege` (as System Informer does) to read processes owned by services and other
   users.

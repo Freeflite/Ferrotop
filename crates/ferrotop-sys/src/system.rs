@@ -293,7 +293,7 @@ pub fn set_start_at_sign_in(enabled: bool) -> Result<()> {
     if status == ERROR_SUCCESS { Ok(()) } else { Err(Error::Win32 { call: "RegSetKeyValueW", code: status }) }
 }
 
-fn string_value(root: HKEY, key: &str, value: &str) -> Option<String> {
+pub(crate) fn string_value(root: HKEY, key: &str, value: &str) -> Option<String> {
     let (key, value) = (wide(key), wide(value));
     let mut data = vec![0u16; 1024];
     let mut size = (data.len() * 2) as u32;
