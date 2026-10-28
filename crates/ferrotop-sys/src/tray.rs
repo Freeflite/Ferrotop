@@ -13,11 +13,12 @@ use windows_sys::Win32::UI::Shell::{
     NOTIFYICON_VERSION_4, NOTIFYICONDATAW, NOTIFYICONDATAW_0, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-    DestroyWindow, FindWindowW, GetCursorPos, GetSystemMetrics, HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR,
-    LoadIconW, LoadImageW, MF_SEPARATOR, MF_STRING, MSGFLT_ALLOW, PostMessageW, RegisterClassExW,
-    RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    TrackPopupMenu, WM_APP, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_NULL, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
+    AllowSetForegroundWindow, AppendMenuW, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW,
+    DefWindowProcW, DestroyMenu, DestroyWindow, FindWindowW, GetCursorPos, GetSystemMetrics, GetWindowThreadProcessId,
+    HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, LoadIconW, LoadImageW, MF_SEPARATOR, MF_STRING, MSGFLT_ALLOW,
+    PostMessageW, RegisterClassExW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SetForegroundWindow,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_NULL, WNDCLASSEXW,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use crate::buffer::wide;
@@ -151,8 +152,20 @@ pub fn show_existing() -> bool {
     let class = wide(WINDOW_CLASS);
     // SAFETY: the class name is NUL-terminated; a null title matches any.
     let window = unsafe { FindWindowW(class.as_ptr(), std::ptr::null()) };
+    if window.is_null() {
+        return false;
+    }
+    // This launch came from the user (a click, Ctrl+Shift+Esc), so it may bring a window to the
+    // front. The running copy may not, so pass that on, or its window could stay behind others.
+    let mut process = 0u32;
+    // SAFETY: a plain query of a window handle; `process` is a valid out pointer.
+    unsafe { GetWindowThreadProcessId(window, &mut process) };
+    if process != 0 {
+        // SAFETY: no memory-safety preconditions; it fails harmlessly if this process can't.
+        unsafe { AllowSetForegroundWindow(process) };
+    }
     // SAFETY: posting a registered message to a window handle has no memory-safety preconditions.
-    !window.is_null() && unsafe { PostMessageW(window, show_message(), 0, 0) } != 0
+    unsafe { PostMessageW(window, show_message(), 0, 0) != 0 }
 }
 
 /// The message another instance sends to say "show yourself".
