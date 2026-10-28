@@ -52,6 +52,11 @@ pub fn started_as_task_manager(first_argument: Option<&str>) -> bool {
 /// Makes Task Manager open Ferrotop: copies `exe` to Program Files (unless it's that copy) and
 /// points Task Manager at it. Needs administrator rights.
 pub fn replace(exe: &Path) -> Result<()> {
+    // The history service runs from the same copy: update it properly (stop, copy, start), or it
+    // would go on running the old program.
+    if service_host::state() != ServiceState::NotInstalled {
+        service_host::install(exe)?;
+    }
     let copy = service_host::install_copy(exe)?;
     let command = wide(&format!("\"{}\"", copy.display()));
     let bytes = u32::try_from(command.len() * 2).map_err(|_| Error::Malformed { call: "Task Manager command" })?;
