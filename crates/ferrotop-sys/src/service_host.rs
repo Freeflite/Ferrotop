@@ -27,7 +27,7 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateDirectoryW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, GetFileAttributesW,
-    INVALID_FILE_ATTRIBUTES, MoveFileExW,
+    INVALID_FILE_ATTRIBUTES, MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::Services::{
@@ -180,7 +180,7 @@ pub fn data_dir() -> Result<PathBuf> {
     Ok(known_folder(&FOLDERID_ProgramData)?.join("Ferrotop"))
 }
 
-fn known_folder(id: &GUID) -> Result<PathBuf> {
+pub(crate) fn known_folder(id: &GUID) -> Result<PathBuf> {
     let mut path: *mut u16 = std::ptr::null_mut();
     // SAFETY: `id` is a valid folder GUID and `path` a valid out pointer; a null token means the
     // current user (these folders are the same for everyone).
@@ -525,7 +525,7 @@ pub fn install_copy(exe: &Path) -> Result<PathBuf> {
 }
 
 /// Deletes the copy in Program Files, and its folder once empty. A copy that's still running
-/// is moved aside instead, to be deleted next time. Needs administrator rights.
+/// is moved aside and deleted at the next restart. Needs administrator rights.
 pub fn remove_copy() {
     let Ok(target) = service_exe_path() else { return };
     let Some(folder) = target.parent() else { return };
@@ -533,7 +533,38 @@ pub fn remove_copy() {
         let _ = std::fs::rename(&target, set_aside_name(folder));
     }
     remove_set_aside(folder);
-    let _ = std::fs::remove_dir(folder);
+    if std::fs::remove_dir(folder).is_err() && folder.exists() {
+        // Something there is still running: have Windows delete what's left when it restarts.
+        if let Ok(entries) = std::fs::read_dir(folder) {
+            for entry in entries.flatten() {
+                delete_at_restart(&entry.path());
+            }
+        }
+        delete_at_restart(folder);
+    }
+}
+
+fn delete_at_restart(path: &Path) {
+    let path = wide_path(path);
+    // SAFETY: `path` is NUL-terminated; a null destination means delete. Restart-time deletes run
+    // in the order they were asked for, so the folder's files go before the folder.
+    unsafe { MoveFileExW(path.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT) };
+}
+
+/// Whether anything still runs the Program Files copy: the history service, Task Manager's
+/// replacement, an installation, or the no-prompt administrator start.
+pub fn copy_in_use() -> bool {
+    state() != ServiceState::NotInstalled
+        || crate::task_manager::is_replaced()
+        || crate::install::installed().is_some()
+        || crate::elevated_start::is_enabled()
+}
+
+/// Deletes the Program Files copy unless something still runs it. Needs administrator rights.
+pub fn remove_copy_if_unused() {
+    if !copy_in_use() {
+        remove_copy();
+    }
 }
 
 fn set_aside_name(folder: &Path) -> PathBuf {
@@ -552,9 +583,16 @@ fn remove_set_aside(folder: &Path) {
     }
 }
 
-/// Stops and removes the service, and its copy in Program Files unless Task Manager opens it.
+/// Stops and removes the service, and its copy in Program Files unless something else runs it.
 /// The recorded history stays (see [`remove_history`]). Needs administrator rights.
 pub fn uninstall() -> Result<()> {
+    remove_service()?;
+    remove_copy_if_unused();
+    Ok(())
+}
+
+/// Stops and removes the service, if it's installed. Needs administrator rights.
+pub fn remove_service() -> Result<()> {
     let manager = open_manager(SC_MANAGER_CONNECT)?;
     match open_service(&manager, SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE) {
         Ok(service) => {
@@ -566,10 +604,6 @@ pub fn uninstall() -> Result<()> {
         }
         Err(Error::Win32 { code: ERROR_SERVICE_DOES_NOT_EXIST, .. }) => {}
         Err(error) => return Err(error),
-    }
-    // Task Manager would fail to open with its replacement gone.
-    if !crate::task_manager::is_replaced() {
-        remove_copy();
     }
     Ok(())
 }

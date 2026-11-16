@@ -90,6 +90,21 @@ pub fn current_token() -> Result<TokenInfo> {
     token_info(&unsafe { OwnedHandle::from_raw_handle(token) })
 }
 
+/// `TOKEN_ELEVATION_TYPE` of our own token: 1 default (a standard user, or UAC off), 2 full (an
+/// administrator, elevated), 3 limited (an administrator, not elevated).
+pub fn current_elevation_type() -> Option<u32> {
+    // SAFETY: returns a pseudo-handle that needs no closing; no preconditions.
+    let process = unsafe { GetCurrentProcess() };
+    let mut token = std::ptr::null_mut();
+    // SAFETY: `process` is the current-process pseudo-handle and `token` is a valid out-pointer.
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return None;
+    }
+    // SAFETY: `token` is a handle we just opened, and nothing else owns it.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    query_token(&token, TokenElevationType).ok().and_then(|(buffer, len)| read_pod::<u32>(buffer.bytes(len), 0))
+}
+
 fn open_token(process: &OwnedHandle) -> Result<OwnedHandle> {
     let mut token = std::ptr::null_mut();
     // SAFETY: `process` is a live process handle and `token` is a valid out-pointer.

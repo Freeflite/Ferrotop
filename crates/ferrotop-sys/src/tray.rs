@@ -168,6 +168,15 @@ pub fn show_existing() -> bool {
     unsafe { PostMessageW(window, show_message(), 0, 0) != 0 }
 }
 
+/// Lets whichever process asks next bring its window to the front: for a launch that hands over
+/// to another process (the elevated copy a scheduled task starts), which needs this launch's
+/// right to take the foreground.
+pub fn allow_any_foreground() {
+    const ASFW_ANY: u32 = u32::MAX;
+    // SAFETY: no memory-safety preconditions; it fails harmlessly if this process can't.
+    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+}
+
 /// The message another instance sends to say "show yourself".
 fn show_message() -> u32 {
     let name = wide("Ferrotop.Show");

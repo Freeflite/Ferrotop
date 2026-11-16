@@ -10,6 +10,7 @@ mod pages;
 mod performance;
 mod process_columns;
 mod series_ui;
+mod setup;
 mod tables;
 
 use std::cell::RefCell;
@@ -256,7 +257,12 @@ impl App {
     }
 
     fn set_start_at_sign_in(&mut self, ui: &MainWindow, on: bool) {
-        match ferrotop_sys::system::set_start_at_sign_in(on) {
+        // The installed copy, when there is one: a download's folder may move or be cleaned out.
+        let result = match ferrotop_sys::install::installed() {
+            Some(installed) => ferrotop_sys::system::set_start_at_sign_in_for(on, &installed.exe),
+            None => ferrotop_sys::system::set_start_at_sign_in(on),
+        };
+        match result {
             Ok(()) if on => self.show_message(ui, "Ferrotop will start in the tray when you sign in".into()),
             Ok(()) => self.show_message(ui, "Ferrotop won't start when you sign in".into()),
             Err(error) => {
@@ -810,6 +816,48 @@ fn run_history_service() {
 }
 
 /// The exit code an elevated helper reports: 0 for success, else the Windows error code (or 1).
+/// Starts the installed copy as administrator through the scheduled task; `false` (and nothing
+/// started) when this isn't the installed copy or the same build of it, as the task would start
+/// that one instead of this.
+fn hand_over_to_elevated(start_in_tray: bool) -> ferrotop_sys::Result<bool> {
+    let Some(installed) = ferrotop_sys::install::installed() else { return Ok(false) };
+    let own = std::env::current_exe()
+        .map_err(|_| ferrotop_sys::Error::Other { message: "couldn't find Ferrotop's own path" })?;
+    if !ferrotop_sys::install::is_installed_build(&own, &installed) {
+        return Ok(false);
+    }
+    if start_in_tray {
+        ferrotop_sys::elevated_start::request_tray();
+    }
+    // This launch may come to the front; the elevated copy needs that passed on.
+    ferrotop_sys::tray::allow_any_foreground();
+    ferrotop_sys::elevated_start::start()?;
+    Ok(true)
+}
+
+/// Removing Ferrotop from Settings → Apps: with administrator approval, then a message saying
+/// how it went (there's no window).
+fn uninstall_from_apps() -> i32 {
+    if !ferrotop_sys::system::is_elevated() {
+        return match service_host::run_self_elevated("--uninstall") {
+            Ok(code) => code as i32,
+            Err(_) => ERROR_CANCELLED as i32,
+        };
+    }
+    let result = ferrotop_sys::install::uninstall();
+    match &result {
+        Ok(()) => ferrotop_sys::system::message_box(
+            "Ferrotop",
+            "Ferrotop was removed. Your settings and any recorded history were kept.",
+            false,
+        ),
+        Err(error) => {
+            ferrotop_sys::system::message_box("Ferrotop", &format!("Couldn't remove Ferrotop: {error}"), true)
+        }
+    }
+    exit_code(result)
+}
+
 fn exit_code(result: ferrotop_sys::Result<()>) -> i32 {
     match result {
         Ok(()) => 0,
@@ -974,8 +1022,30 @@ fn main() -> Result<(), slint::PlatformError> {
     if arguments.iter().any(|a| a == "--restore-task-manager") {
         std::process::exit(exit_code(ferrotop_sys::task_manager::restore()));
     }
-    // Started at sign-in: begin in the tray.
-    let start_in_tray = arguments.iter().any(|a| a == "--tray");
+    // Installing and removing Ferrotop itself, and its no-prompt administrator start.
+    if arguments.iter().any(|a| a == "--install") {
+        let installed = std::env::current_exe()
+            .map_err(|_| ferrotop_sys::Error::Other { message: "couldn't find Ferrotop's own path" })
+            .and_then(|exe| ferrotop_sys::install::install(&exe).map(|_| ()));
+        std::process::exit(exit_code(installed));
+    }
+    if arguments.iter().any(|a| a == "--uninstall-quiet") {
+        std::process::exit(exit_code(ferrotop_sys::install::uninstall()));
+    }
+    if arguments.iter().any(|a| a == "--uninstall") {
+        std::process::exit(uninstall_from_apps());
+    }
+    if arguments.iter().any(|a| a == "--enable-elevated-start") {
+        std::process::exit(exit_code(ferrotop_sys::elevated_start::enable()));
+    }
+    if arguments.iter().any(|a| a == "--disable-elevated-start") {
+        std::process::exit(exit_code(ferrotop_sys::elevated_start::disable()));
+    }
+    let elevated = ferrotop_sys::system::is_elevated();
+    // Started at sign-in: begin in the tray (also when the copy started at sign-in handed over to
+    // this elevated one).
+    let start_in_tray =
+        arguments.iter().any(|a| a == "--tray") || (elevated && ferrotop_sys::elevated_start::take_tray_request());
     // An elevated restart takes over from the copy that launched it.
     let replace = arguments.iter().any(|a| a == "--replace");
     if !replace {
@@ -987,7 +1057,23 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
     let settings = Settings::load();
-    let elevated = ferrotop_sys::system::is_elevated();
+    // Always run as administrator: hand over to the scheduled task, which starts the installed
+    // copy elevated without a prompt.
+    let mut startup_note = None;
+    if settings.always_elevated && !elevated && !replace {
+        match hand_over_to_elevated(start_in_tray) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {
+                startup_note = Some(
+                    "This isn't the installed Ferrotop, so it started without administrator rights (Settings → Update installs it)",
+                );
+            }
+            Err(_) => {
+                startup_note =
+                    Some("Couldn't start as administrator; turn Always run as administrator on again in Settings");
+            }
+        }
+    }
     let debug_privilege = elevated && ferrotop_sys::system::enable_debug_privilege().is_ok();
 
     let ui = MainWindow::new()?;
@@ -1028,6 +1114,9 @@ fn main() -> Result<(), slint::PlatformError> {
         app.init_history(&ui);
         if elevated && !debug_privilege {
             app.show_message(&ui, "Running elevated, but SeDebugPrivilege couldn't be enabled".into());
+        }
+        if let Some(note) = startup_note {
+            app.show_message(&ui, note.into());
         }
     }
     APP.with(|cell| *cell.borrow_mut() = Some(Rc::clone(&app)));
@@ -1108,6 +1197,13 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_history_service_clicked(move || history_service(()));
     ui.on_start_at_sign_in_toggled(handler(&ui, &app, App::set_start_at_sign_in));
     ui.on_replace_task_manager_toggled(handler(&ui, &app, App::set_replace_task_manager));
+    let settings_opened = handler(&ui, &app, |app, ui, ()| app.open_settings(ui));
+    ui.on_settings_opened(move || settings_opened(()));
+    let install = handler(&ui, &app, |app, ui, ()| app.install_clicked(ui));
+    ui.on_install_clicked(move || install(()));
+    let uninstall = handler(&ui, &app, |app, ui, ()| app.uninstall_clicked(ui));
+    ui.on_uninstall_clicked(move || uninstall(()));
+    ui.on_always_elevated_toggled(handler(&ui, &app, App::always_elevated_toggled));
 
     let tray = TrayIcon::add("Ferrotop", |event| {
         // Inside the icon's window procedure: act from the event loop instead.

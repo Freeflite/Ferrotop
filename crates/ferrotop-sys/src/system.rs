@@ -19,7 +19,9 @@ use windows_sys::Win32::System::Threading::{
     GetActiveProcessorCount, GetActiveProcessorGroupCount, GetCurrentProcess, OpenProcessToken,
 };
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
-use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MessageBoxW, SW_SHOWNORMAL,
+};
 
 use crate::buffer::{Pod, wide};
 use crate::ntapi::{
@@ -268,6 +270,12 @@ pub fn sign_in_command() -> Option<String> {
 /// Makes this copy of Ferrotop start in the tray when you sign in, or stops that. Only your own
 /// sign-in is affected (the current user's Run key).
 pub fn set_start_at_sign_in(enabled: bool) -> Result<()> {
+    let exe = std::env::current_exe().map_err(|_| Error::Malformed { call: "current_exe" })?;
+    set_start_at_sign_in_for(enabled, &exe)
+}
+
+/// As [`set_start_at_sign_in`], for the copy at `exe` (the installed one, say).
+pub fn set_start_at_sign_in_for(enabled: bool, exe: &std::path::Path) -> Result<()> {
     let (key, value) = (wide(RUN_KEY), wide(RUN_VALUE));
     if !enabled {
         // SAFETY: both strings are NUL-terminated.
@@ -277,7 +285,6 @@ pub fn set_start_at_sign_in(enabled: bool) -> Result<()> {
             code => Err(Error::Win32 { call: "RegDeleteKeyValueW", code }),
         };
     }
-    let exe = std::env::current_exe().map_err(|_| Error::Malformed { call: "current_exe" })?;
     let command: Vec<u16> = "\""
         .encode_utf16()
         .chain(exe.as_os_str().encode_wide())
@@ -291,6 +298,67 @@ pub fn set_start_at_sign_in(enabled: bool) -> Result<()> {
         RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), REG_SZ, command.as_ptr().cast(), bytes)
     };
     if status == ERROR_SUCCESS { Ok(()) } else { Err(Error::Win32 { call: "RegSetKeyValueW", code: status }) }
+}
+
+/// Seconds since 1970.
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// A string value under `HKEY_CURRENT_USER`.
+pub(crate) fn user_value(key: &str, value: &str) -> Option<String> {
+    string_value(HKEY_CURRENT_USER, key, value)
+}
+
+pub(crate) fn set_user_value(key: &str, value: &str, data: &str) -> Result<()> {
+    let (key, value, data) = (wide(key), wide(value), wide(data));
+    let bytes = u32::try_from(data.len() * 2).map_err(|_| Error::Malformed { call: "registry value" })?;
+    // SAFETY: the key and value names are NUL-terminated, and `data` is a NUL-terminated REG_SZ of
+    // `bytes` bytes. The key is created if it isn't there.
+    let status = unsafe {
+        RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), REG_SZ, data.as_ptr().cast(), bytes)
+    };
+    if status == ERROR_SUCCESS { Ok(()) } else { Err(Error::Win32 { call: "RegSetKeyValueW", code: status }) }
+}
+
+pub(crate) fn delete_user_value(key: &str, value: &str) -> Result<()> {
+    let (key, value) = (wide(key), wide(value));
+    // SAFETY: both strings are NUL-terminated.
+    let status = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr()) };
+    match status {
+        ERROR_SUCCESS | ERROR_FILE_NOT_FOUND => Ok(()),
+        code => Err(Error::Win32 { call: "RegDeleteKeyValueW", code }),
+    }
+}
+
+/// Where Windows keeps a program's compatibility settings (Properties → Compatibility), by path.
+const LAYERS_KEY: &str = r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers";
+
+/// Whether "Run this program as an administrator" is ticked (for this user) on `exe`.
+pub fn runs_as_admin_by_compatibility(exe: &std::path::Path) -> bool {
+    user_value(LAYERS_KEY, &exe.to_string_lossy())
+        .is_some_and(|flags| flags.split_whitespace().any(|f| f == "RUNASADMIN"))
+}
+
+/// Unticks "Run this program as an administrator" (for this user) on `exe`, leaving its other
+/// compatibility settings as they are.
+pub fn clear_run_as_admin_compatibility(exe: &std::path::Path) -> Result<()> {
+    let name = exe.to_string_lossy();
+    let Some(flags) = user_value(LAYERS_KEY, &name) else { return Ok(()) };
+    let kept: Vec<&str> = flags.split_whitespace().filter(|f| *f != "RUNASADMIN").collect();
+    if kept.iter().all(|f| *f == "~") {
+        delete_user_value(LAYERS_KEY, &name)
+    } else {
+        set_user_value(LAYERS_KEY, &name, &kept.join(" "))
+    }
+}
+
+/// A plain message box, for when there's no window (removing Ferrotop from Settings → Apps).
+pub fn message_box(title: &str, text: &str, error: bool) {
+    let (title, text) = (wide(title), wide(text));
+    let icon = if error { MB_ICONERROR } else { MB_ICONINFORMATION };
+    // SAFETY: both strings are NUL-terminated; a null owner is allowed.
+    unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | icon | MB_SETFOREGROUND) };
 }
 
 pub(crate) fn string_value(root: HKEY, key: &str, value: &str) -> Option<String> {

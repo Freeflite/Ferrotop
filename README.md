@@ -20,6 +20,9 @@ lists SHA-256 checksums and has a signed build-provenance attestation
 (`gh attestation verify ferrotop.exe --repo Freeflite/Ferrotop`), or
 [build it yourself](#building).
 
+Run it from wherever you saved it, or let it install itself: **View → Settings… → Install** puts
+it in Program Files, the Start menu and Settings → Apps (where it can be removed again).
+
 ## What it does
 
 ### Processes
@@ -78,8 +81,8 @@ A page like Task Manager's: a device list with live mini-graphs, and for the sel
 
 The View menu lists the selected device's graphs; turn any of them off. With all of a device's
 graphs off, its figures fill the pane in large type. **Right-click** any graph, core, device or
-figure to show it in History or in the header's small graphs (View → Header graphs… picks
-those too).
+figure to show it in History or in the header's small graphs (View → Settings… → Header
+graphs… picks those too).
 
 ### History
 
@@ -138,13 +141,24 @@ driver. Ferrotop ships no driver, but uses one of these if it's there:
 
 - **Light, dark, or follow-Windows theme** (follows live changes). On Windows 11 the native title
   bar is painted in the theme's colors.
-- **Tray icon**: closing the window leaves Ferrotop in the notification area (View → Close to
+- **Settings** (View → Settings…) hold the theme, the tray, starting at sign-in, the header
+  graphs, and installing.
+- **Tray icon**: closing the window leaves Ferrotop in the notification area (Settings → Close to
   tray), with CPU and memory in its tooltip; click it to bring the window back, right-click for
-  Exit. View → Start at sign-in starts it there when you sign in. Launching Ferrotop again shows
-  the copy that's already running.
-- **In place of Task Manager** (View → Open Ferrotop instead of Task Manager, with administrator
-  approval): the taskbar's Task Manager, Ctrl+Shift+Esc and the Ctrl+Alt+Del screen open
-  Ferrotop, as Process Explorer and System Informer can. Untick it to put Task Manager back.
+  Exit. Settings → Start at sign-in starts it there when you sign in. Launching Ferrotop again
+  shows the copy that's already running.
+- **Installs itself** (Settings → Install, with administrator approval): a copy in Program Files,
+  a Start menu shortcut and an entry in Settings → Apps. Running a newer download offers to
+  update it; Uninstall… (or removing it from Apps) takes it all away again, keeping your
+  settings and any recorded history.
+- **Always run as administrator, without a prompt** (Settings, once installed; asks once):
+  Ferrotop starts the installed copy through a scheduled task for your account, the only way
+  Windows skips the UAC prompt. This works for the Start menu, start at sign-in and Task
+  Manager's replacement too.
+- **In place of Task Manager** (Settings → Open Ferrotop instead of Task Manager, with
+  administrator approval): the taskbar's Task Manager, Ctrl+Shift+Esc and the Ctrl+Alt+Del
+  screen open Ferrotop, as Process Explorer and System Informer can. Untick it to put Task
+  Manager back.
 - **Run as administrator** from the status bar. When elevated, Ferrotop enables
   `SeDebugPrivilege` (as System Informer does) to read processes owned by services and other
   users.

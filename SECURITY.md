@@ -52,6 +52,27 @@ Only the latest release gets security fixes.
   - Windows strips every privilege from its token except bypass traverse checking, creating
     global objects (for the live section) and system profiling (for the kernel trace).
   - Installing and removing it are explicit actions that need administrator approval.
+- **Installing** (Settings → Install) copies Ferrotop to `%ProgramFiles%\Ferrotop`, the same
+  protected copy the history service runs, and adds a Start menu shortcut and an entry in
+  Settings → Apps. Every administrator change (installing, the service, Task Manager, the
+  administrator start) is made by a separate copy of Ferrotop started through the UAC prompt;
+  the window itself never holds administrator rights it wasn't started with. Uninstalling
+  removes all of them; a copy that's still running is deleted when Windows restarts.
+- **Always run as administrator, without a prompt** registers a scheduled task for the current
+  user, set to run with highest privileges. It's the one way Windows skips the UAC prompt, so it
+  is a deliberate exception to UAC for Ferrotop alone, and it's built to give nothing else a way
+  in:
+  - The task starts only the installed copy in Program Files, which users can't replace, with a
+    fixed command line. Any program you run can start the task, but it can't choose what runs or
+    pass arguments to it.
+  - The task's definition is written into that same protected folder before it's registered, so
+    nothing can change it in between.
+  - A Ferrotop started normally only hands over to the task when it is the installed copy, or the
+    very same build byte for byte; any other copy starts without administrator rights.
+  - The elevated copy reads only your settings and History layouts, with strict parsers, and its
+    DLL search is limited to System32. Programs that aren't elevated can't send it input
+    (Windows' UIPI); the only message it accepts from them is "show your window".
+  - Turning the setting off, or uninstalling, removes the task.
 - **Opening in place of Task Manager** sets the `Debugger` value of Task Manager's Image File
   Execution Options, which needs administrator approval:
   - It always points at the copy in `%ProgramFiles%\Ferrotop` (shared with the history service),

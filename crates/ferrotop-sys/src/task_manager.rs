@@ -70,9 +70,16 @@ pub fn replace(exe: &Path) -> Result<()> {
 }
 
 /// Puts Task Manager back, if Ferrotop replaced it (another program's replacement is left
-/// alone), and removes the Program Files copy unless the history service still uses it. Needs
-/// administrator rights.
+/// alone), and removes the Program Files copy unless something else runs it. Needs administrator
+/// rights.
 pub fn restore() -> Result<()> {
+    remove_replacement()?;
+    service_host::remove_copy_if_unused();
+    Ok(())
+}
+
+/// Puts Task Manager back, if Ferrotop replaced it. Needs administrator rights.
+pub fn remove_replacement() -> Result<()> {
     if is_replaced() {
         let (key, value) = (wide(KEY), wide(VALUE));
         // SAFETY: both strings are NUL-terminated.
@@ -80,10 +87,6 @@ pub fn restore() -> Result<()> {
         if !matches!(status, ERROR_SUCCESS | ERROR_FILE_NOT_FOUND) {
             return Err(Error::Win32 { call: "RegDeleteKeyValueW", code: status });
         }
-    }
-    if service_host::state() == ServiceState::NotInstalled {
-        // A copy that's running (Ferrotop opened as Task Manager) stays until it's next updated.
-        service_host::remove_copy();
     }
     Ok(())
 }

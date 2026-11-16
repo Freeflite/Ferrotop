@@ -157,6 +157,8 @@ pub struct Settings {
     pub history_programs_width: u32,
     /// The small graphs in the header, by series id.
     pub header_graphs: Vec<String>,
+    /// Start as administrator without a prompt, through the scheduled task (see Settings).
+    pub always_elevated: bool,
 }
 
 impl Default for Settings {
@@ -193,6 +195,7 @@ impl Default for Settings {
             history_programs: true,
             history_programs_width: 460,
             header_graphs: vec!["cpu".into(), "memory".into()],
+            always_elevated: false,
         }
     }
 }
@@ -252,6 +255,7 @@ impl Settings {
                 "close-to-tray" => settings.close_to_tray = value != "false",
                 "history-graphs" => settings.history_graphs = series::parse_graphs(value),
                 "history-programs" => settings.history_programs = value != "false",
+                "always-elevated" => settings.always_elevated = value == "true",
                 "history-programs-width" => {
                     if let Some(width) = value.parse().ok().filter(|w| (200..=4000).contains(w)) {
                         settings.history_programs_width = width;
@@ -323,6 +327,7 @@ impl Settings {
         let _ = writeln!(text, "history-programs={}", self.history_programs);
         let _ = writeln!(text, "history-programs-width={}", self.history_programs_width);
         let _ = writeln!(text, "header-graphs={}", self.header_graphs.join(","));
+        let _ = writeln!(text, "always-elevated={}", self.always_elevated);
         for (name, layout) in &self.table_layouts {
             let columns: Vec<String> = layout.iter().map(|(title, width)| format!("{title}:{width}")).collect();
             let _ = writeln!(text, "table.{name}={}", columns.join("|"));
@@ -383,6 +388,7 @@ mod tests {
             history_programs: false,
             history_programs_width: 333,
             header_graphs: vec!["cpu.temp".into(), "gpu.0.load".into()],
+            always_elevated: true,
         };
         assert_eq!(Settings::parse(&settings.serialize()), settings);
     }

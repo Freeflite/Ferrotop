@@ -24,6 +24,8 @@ pub enum Pending {
     Suspend(ProcessKey),
     Realtime(ProcessKey),
     Service(String, ServiceCommand),
+    /// Removing Ferrotop's installation (Settings).
+    Uninstall,
 }
 
 #[derive(Default)]
@@ -90,6 +92,7 @@ impl App {
             Some(Pending::Suspend(key)) => self.suspend(ui, key),
             Some(Pending::Realtime(key)) => self.set_priority(ui, key, 5),
             Some(Pending::Service(name, command)) => self.service_command(ui, name, command),
+            Some(Pending::Uninstall) => self.uninstall_confirmed(ui),
             None => {}
         }
     }
