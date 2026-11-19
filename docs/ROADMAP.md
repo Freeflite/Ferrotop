@@ -108,6 +108,14 @@ are noted so each port can be checked against the original.
 - [x] Open in place of Task Manager (taskbar, Ctrl+Shift+Esc, Ctrl+Alt+Del) through Image File
       Execution Options, pointing at the protected Program Files copy (0.6.1)
 
+## v0.7: settings and installing (done)
+
+- [x] A Settings pane for the theme, tray, sign-in, header graphs and installing
+- [x] Installs itself from the exe: Program Files copy, Start menu shortcut, Settings → Apps
+      entry, update from a newer download, uninstall from either place
+- [x] Always run as administrator without a prompt, through a per-user scheduled task that
+      starts only the installed copy with a fixed command line
+
 ## Next
 
 - Hovering a history graph to see that moment's busiest processes
